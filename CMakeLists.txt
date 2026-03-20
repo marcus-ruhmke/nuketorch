@@ -58,6 +58,10 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nuketorch
 )
 
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchLibtorch.cmake"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nuketorch
+)
+
 option(NUKETORCH_BUILD_TESTING "Build nuketorch unit tests" ON)
 if(BUILD_TESTING AND NUKETORCH_BUILD_TESTING)
   enable_testing()

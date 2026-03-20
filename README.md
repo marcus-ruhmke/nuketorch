@@ -38,6 +38,24 @@ To skip unit tests when this project is pulled in as a dependency, set `NUKETORC
 
 ## Consume in your project
 
+### libtorch auto-download
+
+`cmake/FetchLibtorch.cmake` (also installed under `lib/cmake/nuketorch/`) can download a libtorch zip from `download.pytorch.org` before `find_package(Torch)` when `LIBTORCH_ROOT` is empty and Torch is not already on `CMAKE_PREFIX_PATH`.
+
+```cmake
+list(APPEND CMAKE_MODULE_PATH "${nuketorch_SOURCE_DIR}/cmake")  # or installed prefix .../lib/cmake/nuketorch
+include(FetchLibtorch)
+find_package(Torch REQUIRED)
+```
+
+Typical cache variables:
+
+```bash
+cmake -B build -DTORCH_VERSION=2.10.0 -DCUDA_VARIANT=cu130
+```
+
+Override with a local tree: `-DLIBTORCH_ROOT=/path/to/libtorch`.
+
 ### Option A: `add_subdirectory` / FetchContent (local path)
 
 ```cmake

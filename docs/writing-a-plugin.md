@@ -112,7 +112,9 @@ Two targets:
 
 Match **CXX ABI** flags to Nuke’s toolchain for the plugin (nnRetime uses `_GLIBCXX_USE_CXX11_ABI=0` on the plugin and ABI 1 on the worker).
 
-**Reference:** `../nnRetime/CMakeLists.txt` — `FetchContent`/`SOURCE_DIR` for nuketorch, `add_nuke_plugin`, `nnRetimeWorker` executable, `BUILD_RPATH` for libtorch.
+**libtorch:** After making nuketorch available (`FetchContent` or `find_package`), add its module path and include `FetchLibtorch` **before** `find_package(Torch REQUIRED)` so workers can auto-download a pinned libtorch (`-DTORCH_VERSION=…`, `-DCUDA_VARIANT=…`) or you can pass `-DLIBTORCH_ROOT=…` to use an existing install.
+
+**Reference:** `../nnRetime/CMakeLists.txt` — `FetchContent`/`SOURCE_DIR` for nuketorch, `include(FetchLibtorch)`, `add_nuke_plugin`, `nnRetimeWorker` executable, `BUILD_RPATH` for libtorch.
 
 ---
 
