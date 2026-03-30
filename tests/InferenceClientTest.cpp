@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <nuketorch/InferenceClient.h>
+#include <nuketorch/InferenceMetrics.h>
 
 #include <unistd.h>
 
@@ -34,8 +35,16 @@ TEST(InferenceClientTest, PingAndProcessRoundTrip) {
     cfg.model_path = "unused.pt";
     cfg.params["timestep"] = "0.25";
 
-    client.processFrame(buffers, cfg);
+    nuketorch::InferenceMetrics metrics;
+    client.processFrame(buffers, cfg, nullptr, &metrics);
     client.stop();
+
+    EXPECT_GT(metrics.total_ms, 0.0);
+    EXPECT_GT(metrics.shm_write_ms, 0.0);
+    EXPECT_GT(metrics.round_trip_ms, 0.0);
+    EXPECT_GT(metrics.shm_read_ms, 0.0);
+    EXPECT_DOUBLE_EQ(metrics.backend_forward_ms, 42.0);
+    EXPECT_EQ(metrics.backend, "fake");
 
     for (size_t i = 0; i < out.size(); ++i) {
         const float expected = ((in0[i] + in1[i]) * 0.5f) + 0.25f;

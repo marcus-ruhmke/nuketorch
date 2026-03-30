@@ -30,6 +30,11 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < count; ++i) {
                 po[i] = (p0[i] + p1[i]) * 0.5f + timestep;
             }
+
+            ctx.metrics.backend_forward_ms = 42.0;
+            ctx.metrics.backend = "fake";
+            ctx.metrics.device = "cpu";
+            ctx.metrics.dtype = "float32";
         },
         []() { return std::string("OK|FakeWorker"); });
 }

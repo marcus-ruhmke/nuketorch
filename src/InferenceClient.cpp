@@ -1,8 +1,10 @@
 #include <nuketorch/InferenceClient.h>
 
 #include <nuketorch/ImageUtils.h>
+#include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/IPC.h>
 #include <nuketorch/Protocol.h>
+#include <nuketorch/ScopedTimer.h>
 #include <nuketorch/SharedMemoryBuffer.h>
 
 #include <signal.h>
@@ -10,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <stdexcept>
 
 namespace nuketorch {
@@ -143,7 +146,10 @@ std::string InferenceClient::makeSharedMemoryName(const char* role) {
 
 void InferenceClient::processFrame(const FrameBuffers& buffers,
                                    const InferenceConfig& config,
-                                   std::function<bool()> is_aborted) {
+                                   std::function<bool()> is_aborted,
+                                   InferenceMetrics* metrics) {
+    const auto t_total_start = std::chrono::steady_clock::now();
+
     if (!server_ || worker_pid_ <= 0) {
         throw std::runtime_error("worker not started");
     }
@@ -178,12 +184,16 @@ void InferenceClient::processFrame(const FrameBuffers& buffers,
         current_shm_size_ = bytes;
     }
 
-    for (int i = 0; i < num_inputs_; ++i) {
-        copyPlanarWithVerticalFlip(buffers.inputs[static_cast<size_t>(i)],
-                                   static_cast<float*>(shm_inputs_[static_cast<size_t>(i)]->data()),
-                                   buffers.width,
-                                   buffers.height,
-                                   buffers.channels);
+    double shm_write_ms = 0;
+    {
+        nuketorch::ScopedTimer t(shm_write_ms);
+        for (int i = 0; i < num_inputs_; ++i) {
+            copyPlanarWithVerticalFlip(buffers.inputs[static_cast<size_t>(i)],
+                                       static_cast<float*>(shm_inputs_[static_cast<size_t>(i)]->data()),
+                                       buffers.width,
+                                       buffers.height,
+                                       buffers.channels);
+        }
     }
 
     InferenceRequest req;
@@ -201,37 +211,61 @@ void InferenceClient::processFrame(const FrameBuffers& buffers,
         req.shm_inputs.push_back(in->name());
     }
 
-    server_->send(serialize(req));
-
-    int poll_interval_ms = 100;
+    double round_trip_ms = 0;
+    std::string response;
     bool was_aborted = false;
+    {
+        nuketorch::ScopedTimer t(round_trip_ms);
+        server_->send(serialize(req));
 
-    while (true) {
-        if (!was_aborted && is_aborted && is_aborted()) {
-            was_aborted = true;
+        int poll_interval_ms = 100;
+
+        while (true) {
+            if (!was_aborted && is_aborted && is_aborted()) {
+                was_aborted = true;
+            }
+
+            if (server_->hasData(poll_interval_ms)) {
+                break;
+            }
+
+            int st = 0;
+            if (waitpid(worker_pid_, &st, WNOHANG) > 0) {
+                worker_pid_ = -1;
+                throw std::runtime_error("Worker process died unexpectedly");
+            }
         }
 
-        if (server_->hasData(poll_interval_ms)) {
-            break;
-        }
-
-        int st = 0;
-        if (waitpid(worker_pid_, &st, WNOHANG) > 0) {
-            worker_pid_ = -1;
-            throw std::runtime_error("Worker process died unexpectedly");
-        }
+        response = server_->receive(-1);
     }
 
-    const std::string response = server_->receive(-1);
-    if (response != "OK") {
+    InferenceMetrics parsed_worker;
+    std::string parse_error;
+    if (!parseInferenceOkResponse(response, parsed_worker, parse_error)) {
         throw std::runtime_error("worker process failed: " + response);
     }
 
-    copyPlanarWithVerticalFlip(static_cast<const float*>(shm_out_->data()),
-                               buffers.output,
-                               buffers.width,
-                               buffers.height,
-                               buffers.channels);
+    double shm_read_ms = 0;
+    {
+        nuketorch::ScopedTimer t(shm_read_ms);
+        copyPlanarWithVerticalFlip(static_cast<const float*>(shm_out_->data()),
+                                   buffers.output,
+                                   buffers.width,
+                                   buffers.height,
+                                   buffers.channels);
+    }
+
+    const auto t_total_end = std::chrono::steady_clock::now();
+    const double total_ms =
+        std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count();
+
+    if (metrics) {
+        *metrics = parsed_worker;
+        metrics->shm_write_ms = shm_write_ms;
+        metrics->round_trip_ms = round_trip_ms;
+        metrics->shm_read_ms = shm_read_ms;
+        metrics->total_ms = total_ms;
+    }
 
     if (was_aborted) {
         throw std::runtime_error("Cancelled by user");

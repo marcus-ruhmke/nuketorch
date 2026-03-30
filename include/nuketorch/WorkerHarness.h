@@ -1,5 +1,6 @@
 #pragma once
 
+#include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/Protocol.h>
 
 #include <cstddef>
@@ -19,6 +20,8 @@ struct WorkerContext {
     void* output_ptr = nullptr;
     /// Byte size of each input/output shm region (`width * height * channels * sizeof(float)`).
     size_t buffer_bytes = 0;
+    /// Worker fills profiling data; serialized after `"OK"` on success.
+    mutable InferenceMetrics metrics;
 };
 
 /// User code that runs Torch (or any) inference; may throw; errors are turned into `ERROR|...` replies.

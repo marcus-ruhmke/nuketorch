@@ -2,12 +2,17 @@
 
 #include "TestPaths.h"
 
+#include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/Protocol.h>
 #include <nuketorch/torch_worker/BackendCache.h>
 #include <nuketorch/torch_worker/BackendParams.h>
 #include <nuketorch/torch_worker/InferenceBackend.h>
 #include <nuketorch/torch_worker/TorchScriptBackend.h>
 #include <nuketorch/torch_worker/TorchWorkerUtils.h>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAFunctions.h>
+#include <nuketorch/torch_worker/CudaEventTimer.h>
 
 #include <torch/torch.h>
 
@@ -145,6 +150,66 @@ TEST(BackendCacheTest, ReloadFailsForMissingArtifacts) {
     h.model_path = "/nonexistent/nuketorch_trt_test.engine";
     params["backend"] = nuketorch::torch_worker::kBackendTensorRT;
     EXPECT_THROW(cache.ensure(h, params), std::exception);
+}
+
+TEST(BackendCacheTest, EnsurePopulatesMetadata) {
+    nuketorch::torch_worker::BackendCache cache;
+    nuketorch::FrameHeader h;
+    h.width = 1;
+    h.height = 1;
+    h.channels = 1;
+    h.use_gpu = false;
+    h.mixed_precision = false;
+    h.model_path = nuketorch::test::kTinyTorchScriptPt;
+    std::unordered_map<std::string, std::string> params;
+    params["backend"] = nuketorch::torch_worker::kBackendTorchScript;
+
+    nuketorch::InferenceMetrics m;
+    cache.ensure(h, params, &m);
+    EXPECT_FALSE(m.backend.empty());
+    EXPECT_FALSE(m.device.empty());
+    EXPECT_FALSE(m.dtype.empty());
+    EXPECT_EQ(m.backend, nuketorch::torch_worker::kBackendTorchScript);
+    EXPECT_EQ(m.dtype, "float32");
+}
+
+TEST(BackendCacheTest, EnsureReportsLoadTimeWarmCold) {
+    nuketorch::torch_worker::BackendCache cache;
+    nuketorch::FrameHeader h;
+    h.width = 1;
+    h.height = 1;
+    h.channels = 1;
+    h.use_gpu = false;
+    h.mixed_precision = false;
+    h.model_path = nuketorch::test::kTinyTorchScriptPt;
+    std::unordered_map<std::string, std::string> params;
+    params["backend"] = nuketorch::torch_worker::kBackendTorchScript;
+
+    nuketorch::InferenceMetrics m_cold;
+    cache.ensure(h, params, &m_cold);
+    EXPECT_GE(m_cold.model_load_ms, 0.0);
+
+    nuketorch::InferenceMetrics m_warm;
+    cache.ensure(h, params, &m_warm);
+    EXPECT_DOUBLE_EQ(m_warm.model_load_ms, -1.0);
+}
+
+TEST(CudaEventTimerTest, MeasuresGpuWork) {
+    if (!torch::cuda::is_available()) {
+        GTEST_SKIP() << "CUDA not available";
+    }
+    torch::manual_seed(0);
+    const int device = 0;
+    c10::cuda::set_device(device);
+    at::cuda::CUDAStream cuda_stream = at::cuda::getCurrentCUDAStream(device);
+    cudaStream_t stream = cuda_stream.stream();
+
+    nuketorch::torch_worker::CudaEventTimer timer(stream);
+    timer.start();
+    auto x = torch::randn({2048, 2048}, torch::dtype(torch::kFloat32).device(torch::kCUDA));
+    (void)(x * 2);
+    timer.stop();
+    EXPECT_GT(timer.elapsed_ms(), 0.0f);
 }
 
 #ifdef NUKETORCH_TORCH_WORKER_HAS_TENSORRT

@@ -10,6 +10,7 @@ add_library(nuketorch STATIC
   src/SharedMemoryBuffer.cpp
   src/Protocol.cpp
   src/ImageUtils.cpp
+  src/InferenceMetrics.cpp
   src/InferenceClient.cpp
   src/WorkerHarness.cpp
 )
@@ -78,6 +79,7 @@ if(NUKETORCH_BUILD_TORCH_WORKER)
 
   set(_nuketorch_torch_worker_sources
     src/torch_worker/BackendParams.cpp
+    src/torch_worker/CudaEventTimer.cpp
     src/torch_worker/CudaPinnedMemory.cpp
     src/torch_worker/TorchWorkerUtils.cpp
     src/torch_worker/TorchScriptBackend.cpp

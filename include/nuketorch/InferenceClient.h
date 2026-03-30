@@ -1,5 +1,6 @@
 #pragma once
 
+#include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/SharedMemoryBuffer.h>
 
 #include <functional>
@@ -57,11 +58,13 @@ public:
     /// Send `GPUINFO`; on success returns text after the `OK|` prefix (empty or default string on failure).
     std::string getGpuInfo();
 
-    /// Copy inputs to shm (with vertical flip), send serialized `InferenceRequest`, wait for `OK`, copy output back.
+    /// Copy inputs to shm (with vertical flip), send serialized `InferenceRequest`, wait for `OK` + metrics blob, copy output back.
     /// If @p is_aborted becomes true while waiting, still completes the round-trip then throws `std::runtime_error("Cancelled by user")`.
+    /// When @p metrics is non-null, fills host timings and merges worker metrics from the reply.
     void processFrame(const FrameBuffers& buffers,
                       const InferenceConfig& config,
-                      std::function<bool()> is_aborted = nullptr);
+                      std::function<bool()> is_aborted = nullptr,
+                      InferenceMetrics* metrics = nullptr);
 
 private:
     std::string worker_binary_;

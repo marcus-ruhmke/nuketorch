@@ -18,6 +18,12 @@ target_link_libraries(IPCTest PRIVATE nuketorch::nuketorch gtest_main)
 add_executable(ProtocolTest ProtocolTest.cpp)
 target_link_libraries(ProtocolTest PRIVATE nuketorch::nuketorch gtest_main)
 
+add_executable(InferenceMetricsTest InferenceMetricsTest.cpp)
+target_link_libraries(InferenceMetricsTest PRIVATE nuketorch::nuketorch gtest_main)
+
+add_executable(ScopedTimerTest ScopedTimerTest.cpp)
+target_link_libraries(ScopedTimerTest PRIVATE nuketorch::nuketorch gtest_main)
+
 add_executable(ImageUtilsTest ImageUtilsTest.cpp)
 target_link_libraries(ImageUtilsTest PRIVATE nuketorch::nuketorch gtest_main)
 
@@ -56,6 +62,8 @@ include(GoogleTest)
 gtest_discover_tests(SharedMemoryTest)
 gtest_discover_tests(IPCTest)
 gtest_discover_tests(ProtocolTest)
+gtest_discover_tests(InferenceMetricsTest)
+gtest_discover_tests(ScopedTimerTest)
 gtest_discover_tests(ImageUtilsTest)
 gtest_discover_tests(WorkerHarnessTest)
 gtest_discover_tests(InferenceClientTest)

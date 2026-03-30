@@ -1,5 +1,6 @@
 #include <nuketorch/WorkerHarness.h>
 
+#include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/IPC.h>
 #include <nuketorch/Protocol.h>
 #include <nuketorch/SharedMemoryBuffer.h>
@@ -92,7 +93,7 @@ int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallba
 
             try {
                 inference(ctx);
-                client.send("OK");
+                client.send(std::string("OK") + serializeMetrics(ctx.metrics));
             } catch (const std::exception& e) {
                 client.send(std::string("ERROR|std|") + e.what());
             } catch (...) {
