@@ -45,7 +45,7 @@ void AOTInductorBackend::load(const std::string& model_path, torch::Device devic
     dtype_ = dtype;
 }
 
-torch::Tensor AOTInductorBackend::forward(const std::vector<torch::jit::IValue>& inputs) {
+std::vector<torch::Tensor> AOTInductorBackend::forward(const std::vector<torch::jit::IValue>& inputs) {
     if (!loader_) {
         throw std::runtime_error("AOTInductorBackend: not loaded");
     }
@@ -55,7 +55,7 @@ torch::Tensor AOTInductorBackend::forward(const std::vector<torch::jit::IValue>&
     if (outputs.empty()) {
         throw std::runtime_error("AOTInductorBackend: empty output from package");
     }
-    return outputs[0];
+    return outputs;
 }
 
 bool AOTInductorBackend::isLoaded() const {

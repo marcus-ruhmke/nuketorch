@@ -21,7 +21,7 @@ struct FrameHeader {
     bool mixed_precision = true;
     /// If true, workers may enable verbose logging.
     bool debug = false;
-    /// Path to the model artifact on the worker machine (e.g. TorchScript `.pt`, AOTInductor `.pt2`).
+    /// Path to the model artifact on the worker machine (TorchScript `.pt`, AOTInductor `.pt2`, TensorRT `.engine`).
     std::string model_path;
 };
 

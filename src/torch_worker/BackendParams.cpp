@@ -25,6 +25,9 @@ std::string backendNameFromParams(const std::unordered_map<std::string, std::str
     if (v == "aotinductor" || v == "aoti" || v == "inductor") {
         return kBackendAOTInductor;
     }
+    if (v == "tensorrt" || v == "trt") {
+        return kBackendTensorRT;
+    }
     if (v == "torchscript" || v == "jit" || v == "ts") {
         return kBackendTorchScript;
     }

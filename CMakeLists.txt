@@ -58,17 +58,25 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nuketorch
 )
 
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchLibtorch.cmake"
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchLibtorch.cmake"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindTensorRT.cmake"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nuketorch
 )
 
 option(NUKETORCH_BUILD_TORCH_WORKER "Build torch_worker helpers (requires libtorch)" OFF)
+option(NUKETORCH_TORCH_WORKER_HAS_TENSORRT "TensorRT backend in torch_worker (requires TensorRT SDK + CUDA)" OFF)
+
 if(NUKETORCH_BUILD_TORCH_WORKER)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   include(FetchLibtorch)
   find_package(Torch REQUIRED)
 
-  add_library(nuketorch_torch_worker STATIC
+  if(NUKETORCH_TORCH_WORKER_HAS_TENSORRT)
+    find_package(TensorRT REQUIRED)
+  endif()
+
+  set(_nuketorch_torch_worker_sources
     src/torch_worker/BackendParams.cpp
     src/torch_worker/CudaPinnedMemory.cpp
     src/torch_worker/TorchWorkerUtils.cpp
@@ -77,12 +85,21 @@ if(NUKETORCH_BUILD_TORCH_WORKER)
     src/torch_worker/InferenceBackend.cpp
     src/torch_worker/BackendCache.cpp
   )
+  if(NUKETORCH_TORCH_WORKER_HAS_TENSORRT)
+    list(APPEND _nuketorch_torch_worker_sources src/torch_worker/TensorRTBackend.cpp)
+  endif()
+
+  add_library(nuketorch_torch_worker STATIC ${_nuketorch_torch_worker_sources})
   target_include_directories(nuketorch_torch_worker PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
   )
   target_link_libraries(nuketorch_torch_worker PUBLIC nuketorch::nuketorch ${TORCH_LIBRARIES})
   target_compile_options(nuketorch_torch_worker PUBLIC ${TORCH_CXX_FLAGS})
+  if(NUKETORCH_TORCH_WORKER_HAS_TENSORRT)
+    target_link_libraries(nuketorch_torch_worker PUBLIC TensorRT::nvinfer)
+    target_compile_definitions(nuketorch_torch_worker PUBLIC NUKETORCH_TORCH_WORKER_HAS_TENSORRT=1)
+  endif()
   add_library(nuketorch::nuketorch_torch_worker ALIAS nuketorch_torch_worker)
 
   install(TARGETS nuketorch_torch_worker

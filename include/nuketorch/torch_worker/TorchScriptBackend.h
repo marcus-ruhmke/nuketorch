@@ -9,7 +9,7 @@ namespace nuketorch::torch_worker {
 class TorchScriptBackend : public InferenceBackend {
 public:
     void load(const std::string& model_path, torch::Device device, torch::ScalarType dtype) override;
-    torch::Tensor forward(const std::vector<torch::jit::IValue>& inputs) override;
+    std::vector<torch::Tensor> forward(const std::vector<torch::jit::IValue>& inputs) override;
     bool isLoaded() const override;
     const std::string& loadedPath() const override;
 

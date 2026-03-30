@@ -8,15 +8,15 @@
 
 namespace nuketorch::torch_worker {
 
-/// Pluggable inference runtime (TorchScript `torch::jit::load` vs AOTInductor `.pt2` package).
+/// Pluggable inference runtime (TorchScript, AOTInductor `.pt2`, optional TensorRT `.engine`).
 class InferenceBackend {
 public:
     virtual ~InferenceBackend() = default;
 
     virtual void load(const std::string& model_path, torch::Device device, torch::ScalarType dtype) = 0;
 
-    /// Runs the compiled model. TorchScript accepts mixed tensors/scalars; AOTInductor converts scalars to tensors.
-    virtual torch::Tensor forward(const std::vector<torch::jit::IValue>& inputs) = 0;
+    /// Runs the compiled model. One entry per output tensor (TorchScript may return a tuple).
+    virtual std::vector<torch::Tensor> forward(const std::vector<torch::jit::IValue>& inputs) = 0;
 
     virtual bool isLoaded() const = 0;
     virtual const std::string& loadedPath() const = 0;
