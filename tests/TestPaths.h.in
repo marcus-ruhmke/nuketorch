@@ -1,0 +1,7 @@
+#pragma once
+
+namespace nuketorch::test {
+
+inline constexpr const char* kTinyTorchScriptPt = "@NUKETORCH_TEST_SOURCE_DIR@/tests/fixtures/tiny_add.pt";
+
+}

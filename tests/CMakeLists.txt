@@ -39,6 +39,19 @@ target_link_libraries(InferenceClientTest PRIVATE nuketorch::nuketorch gtest_mai
 target_compile_definitions(InferenceClientTest PRIVATE FAKE_WORKER_BIN="$<TARGET_FILE:FakeWorker>")
 add_dependencies(InferenceClientTest FakeWorker)
 
+set(NUKETORCH_TEST_SOURCE_DIR "${CMAKE_SOURCE_DIR}")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/TestPaths.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/TestPaths.h"
+  @ONLY
+)
+
+if(TARGET nuketorch_torch_worker)
+  add_executable(TorchWorkerUtilsTest TorchWorkerUtilsTest.cpp)
+  target_link_libraries(TorchWorkerUtilsTest PRIVATE nuketorch::nuketorch_torch_worker gtest_main)
+  target_include_directories(TorchWorkerUtilsTest PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(SharedMemoryTest)
 gtest_discover_tests(IPCTest)
@@ -46,3 +59,6 @@ gtest_discover_tests(ProtocolTest)
 gtest_discover_tests(ImageUtilsTest)
 gtest_discover_tests(WorkerHarnessTest)
 gtest_discover_tests(InferenceClientTest)
+if(TARGET TorchWorkerUtilsTest)
+  gtest_discover_tests(TorchWorkerUtilsTest)
+endif()
