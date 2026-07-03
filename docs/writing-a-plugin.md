@@ -29,6 +29,8 @@ myPlugin/
 
 Ship the worker executable next to the plugin `.so` (same directory as Nuke’s `NUKE_PATH` entry), mirroring nnRetime.
 
+If you launch the worker through a wrapper script (e.g. to set `LD_LIBRARY_PATH`), end the script with `exec ./realWorker "$@"`: the client verifies via `SO_PEERCRED` that the connecting process is the pid it spawned, so a wrapper that forks instead of exec-ing is rejected.
+
 ---
 
 ## Step 1: Worker executable
@@ -41,6 +43,7 @@ Implement `main()` with `nuketorch::workerMain`. You supply:
 Minimal shape:
 
 ```cpp
+#include <nuketorch/Errors.h>
 #include <nuketorch/WorkerHarness.h>
 #include <torch/torch.h>
 #include <stdexcept>
@@ -60,6 +63,12 @@ int main(int argc, char** argv) {
     (void)alpha;
     // Use ctx.input_ptrs[i], ctx.output_ptr, ctx.buffer_bytes
     // ctx.request.header.{width,height,channels,model_path,...}
+
+    // Long-running models: poll ctx.cancelled() between work chunks so the
+    // artist's cancel takes effect immediately instead of after the frame.
+    if (ctx.cancelled()) {
+      throw nuketorch::CancelledError("cancelled between passes");
+    }
   };
 
   return nuketorch::workerMain(argc, argv, inference, gpu_info);
@@ -83,8 +92,9 @@ Example fragment:
 nuketorch::InferenceConfig cfg;
 cfg.model_path = modelPathOnDisk;
 cfg.use_gpu = useGpu;
-cfg.mixed_precision = useMp;
+cfg.mixed_precision = useMp;   // note: full FP16 conversion, not autocast
 cfg.debug = debug;
+cfg.frame_timeout_ms = 120000; // watchdog: kill + TimeoutError instead of a hung GUI thread
 cfg.params["alpha"] = std::to_string(alphaKnob);
 
 nuketorch::FrameBuffers fb;
@@ -94,8 +104,22 @@ fb.width = w;
 fb.height = h;
 fb.channels = c;
 
-worker->processFrame(fb, cfg, [this]() { return aborted() || cancelled(); });
+try {
+  worker->processFrame(fb, cfg, [this]() { return aborted() || cancelled(); });
+} catch (const nuketorch::CancelledError&) {
+  // user cancelled; not an error
+} catch (const nuketorch::WorkerDiedError& e) {
+  // e.what() includes the worker's exit status and a stderr tail;
+  // worker->start() respawns and recovers
+}
 ```
+
+`InferenceClient` is **not** thread-safe: serialize access (Nuke calls render
+entry points from several threads). For large frames, the zero-copy path skips
+two full-frame copies: `mapFrame(w, h, c)` returns direct pointers into shared
+memory, fill them in place, then `processMappedFrame(cfg, ...)` (no vertical
+flip is applied on this path — flip in the worker with `tensor.flip(-2)` on
+GPU, where it is effectively free).
 
 **Canonical reference:** `../nnRetime/src/nnRetime.cpp` (`renderStripe`, worker restart/`ping`, mutex if you serialize GPU access across stripes).
 
@@ -132,15 +156,17 @@ Use GoogleTest; link `gtest_main` and `rt` if needed.
 
 ### Lifecycle test against the real worker
 
-Parent creates `nuketorch::IPCServer`, `fork` + `execl` your real worker binary with the socket path, expect `READY`, `PING`/`PONG`, `QUIT`/`BYE`. See `../nnRetime/tests/WorkerLifecycleTest.cpp`.
+Parent creates `nuketorch::IPCServer`, spawns your real worker binary with the socket path, expects `READY|2` (the protocol version), then `PING|1` → `R|1|PONG` and `QUIT|2` → `R|2|BYE`. See [`tests/WorkerHarnessTest.cpp`](../tests/WorkerHarnessTest.cpp) in this repository for the v2 message shapes.
 
 ---
 
-## Protocol reminder
+## Protocol reminder (v2)
 
-- Control messages are plain ASCII (`READY`, `PING`, `GPUINFO`, …).
-- Frame jobs are binary blobs from `nuketorch::serialize` / `deserialize` (`InferenceRequest`).
+- The worker announces `READY|<protocol version>`; the client refuses a mismatch with a clear error, so a stale worker binary fails fast instead of mysteriously.
+- Control messages carry request ids (`PING|7` → `R|7|PONG`); a timed-out reply is discarded by id and can never desynchronize the stream.
+- Frame jobs are binary blobs from `nuketorch::serialize` / `deserialize` (`InferenceRequest`); the frame buffers travel as `memfd` file descriptors attached to the same message, ordered `[inputs..., output, cancel-flag]`.
 - Keep worker-only keys documented for your team (string map in `params`).
+- Debugging a startup freeze? Set `NUKETORCH_FREEZE_LOG=/path/to/log` in both processes for an fsync-per-line trace that survives a wedged machine.
 
 ---
 

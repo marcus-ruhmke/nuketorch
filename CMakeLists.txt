@@ -119,3 +119,8 @@ if(BUILD_TESTING AND NUKETORCH_BUILD_TESTING)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+option(NUKETORCH_BUILD_FUZZERS "Build libFuzzer harnesses for the wire parsers (requires Clang)" OFF)
+if(NUKETORCH_BUILD_FUZZERS)
+  add_subdirectory(fuzz)
+endif()

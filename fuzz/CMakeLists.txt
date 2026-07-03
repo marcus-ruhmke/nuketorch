@@ -1,0 +1,10 @@
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "NUKETORCH_BUILD_FUZZERS requires Clang (libFuzzer)")
+endif()
+
+foreach(target fuzz_deserialize fuzz_metrics)
+  add_executable(${target} ${target}.cpp)
+  target_link_libraries(${target} PRIVATE nuketorch::nuketorch)
+  target_compile_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined -g -O1)
+  target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+endforeach()

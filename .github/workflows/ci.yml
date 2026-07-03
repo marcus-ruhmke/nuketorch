@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -S . -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (ASan + UBSan)
+        run: >
+          cmake -B build-asan -S . -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-asan -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build-asan --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (Clang + libFuzzer)
+        run: >
+          cmake -B build-fuzz -S . -DNUKETORCH_BUILD_FUZZERS=ON
+          -DBUILD_TESTING=OFF -DNUKETORCH_BUILD_TESTING=OFF
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+      - name: Build
+        run: cmake --build build-fuzz -j"$(nproc)"
+      - name: Fuzz the wire parsers briefly
+        run: |
+          ./build-fuzz/fuzz/fuzz_deserialize -max_total_time=30 -print_final_stats=1
+          ./build-fuzz/fuzz/fuzz_metrics -max_total_time=30 -print_final_stats=1
