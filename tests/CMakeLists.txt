@@ -50,6 +50,11 @@ target_link_libraries(NuketorchCApiTest PRIVATE nuketorch::nuketorch gtest_main 
 target_compile_definitions(NuketorchCApiTest PRIVATE FAKE_WORKER_BIN="$<TARGET_FILE:FakeWorker>")
 add_dependencies(NuketorchCApiTest FakeWorker)
 
+add_executable(WorkerPoolTest WorkerPoolTest.cpp)
+target_link_libraries(WorkerPoolTest PRIVATE nuketorch::nuketorch gtest_main rt)
+target_compile_definitions(WorkerPoolTest PRIVATE FAKE_WORKER_BIN="$<TARGET_FILE:FakeWorker>")
+add_dependencies(WorkerPoolTest FakeWorker)
+
 set(NUKETORCH_TEST_SOURCE_DIR "${CMAKE_SOURCE_DIR}")
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/TestPaths.h.in"
@@ -79,6 +84,7 @@ gtest_discover_tests(ImageUtilsTest)
 gtest_discover_tests(WorkerHarnessTest)
 gtest_discover_tests(InferenceClientTest)
 gtest_discover_tests(NuketorchCApiTest)
+gtest_discover_tests(WorkerPoolTest)
 if(TARGET TorchWorkerUtilsTest)
   gtest_discover_tests(TorchWorkerUtilsTest)
 endif()

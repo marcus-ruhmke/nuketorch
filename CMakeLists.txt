@@ -13,6 +13,7 @@ add_library(nuketorch STATIC
   src/InferenceMetrics.cpp
   src/InferenceClient.cpp
   src/WorkerHarness.cpp
+  src/WorkerPool.cpp
   src/nuketorch_c.cpp
 )
 
