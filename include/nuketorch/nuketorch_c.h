@@ -7,8 +7,23 @@
 extern "C" {
 #endif
 
-/** Opaque handle to host-side inference client (fork/exec worker + IPC + SHM). */
+/** Opaque handle to host-side inference client (spawned worker + IPC + SHM). */
 typedef struct nuketorch_client_opaque* nuketorch_client_t;
+
+/** Error categories mirroring nuketorch::ErrorCode (Errors.h). */
+typedef enum nuketorch_error_code {
+    NUKETORCH_ERRC_OK = 0,
+    NUKETORCH_ERRC_WORKER_DIED = 1,
+    NUKETORCH_ERRC_TIMEOUT = 2,
+    NUKETORCH_ERRC_CANCELLED = 3,
+    NUKETORCH_ERRC_PROTOCOL = 4,
+    NUKETORCH_ERRC_BAD_REQUEST = 5,
+    NUKETORCH_ERRC_WORKER_ERROR = 6,
+    NUKETORCH_ERRC_SPAWN_FAILED = 7,
+    NUKETORCH_ERRC_NOT_STARTED = 8,
+    NUKETORCH_ERRC_INVALID_ARGUMENT = 9,
+    NUKETORCH_ERRC_INTERNAL = 10
+} nuketorch_error_code;
 
 /** Maximum length for backend/device/dtype strings in metrics (including NUL). */
 #define NUKETORCH_METRICS_STRING_MAX 64
@@ -38,6 +53,9 @@ struct nuketorch_inference_config {
     int debug;
     const struct nuketorch_param* params;
     int num_params;
+    /** Per-frame watchdog in ms; 0 waits as long as the worker process lives.
+     *  Appended last so 0.1 field offsets (and positional initializers) stay valid. */
+    int frame_timeout_ms;
 };
 
 struct nuketorch_inference_metrics {
@@ -59,6 +77,7 @@ struct nuketorch_inference_metrics {
 /** Return non-zero if the user requested cancellation (maps to C++ abort predicate). */
 typedef int (*nuketorch_abort_fn)(void* user_data);
 
+/** Returns NULL on invalid arguments (NULL paths, num_inputs < 1) or allocation failure. */
 nuketorch_client_t nuketorch_client_create(const char* worker_binary,
                                            const char* socket_path,
                                            int num_inputs);
@@ -80,6 +99,9 @@ int nuketorch_client_process_frame(nuketorch_client_t client,
                                    struct nuketorch_inference_metrics* metrics);
 
 const char* nuketorch_client_last_error(nuketorch_client_t client);
+
+/** Category of the last failed call on this handle; NUKETORCH_ERRC_OK after a success. */
+nuketorch_error_code nuketorch_client_last_error_code(nuketorch_client_t client);
 
 #ifdef __cplusplus
 }

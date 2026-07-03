@@ -1,5 +1,6 @@
 #include <nuketorch/nuketorch_c.h>
 
+#include <nuketorch/Errors.h>
 #include <nuketorch/InferenceClient.h>
 
 #include <cstring>
@@ -37,16 +38,23 @@ void copyMetricsToC(const nuketorch::InferenceMetrics& src, nuketorch_inference_
 struct NuketorchClientOpaque {
     std::unique_ptr<nuketorch::InferenceClient> client;
     std::string last_error;
+    nuketorch_error_code last_error_code = NUKETORCH_ERRC_OK;
 };
 
-void setError(NuketorchClientOpaque* w, const char* msg) {
+void setError(NuketorchClientOpaque* w, const char* msg,
+              nuketorch_error_code code = NUKETORCH_ERRC_INTERNAL) {
     if (w) {
         w->last_error = msg ? msg : "";
+        w->last_error_code = code;
     }
 }
 
 void setErrorFromException(NuketorchClientOpaque* w, const std::exception& e) {
-    setError(w, e.what());
+    nuketorch_error_code code = NUKETORCH_ERRC_INTERNAL;
+    if (const auto* typed = dynamic_cast<const nuketorch::Error*>(&e)) {
+        code = static_cast<nuketorch_error_code>(typed->code());
+    }
+    setError(w, e.what(), code);
 }
 
 }  // namespace
@@ -84,12 +92,21 @@ const char* nuketorch_client_last_error(nuketorch_client_t client) {
     return w->last_error.c_str();
 }
 
+nuketorch_error_code nuketorch_client_last_error_code(nuketorch_client_t client) {
+    if (!client) {
+        return NUKETORCH_ERRC_INVALID_ARGUMENT;
+    }
+    auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
+    return w->last_error_code;
+}
+
 int nuketorch_client_start(nuketorch_client_t client) {
     if (!client) {
         return -1;
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
     try {
         w->client->start();
         return 0;
@@ -105,6 +122,7 @@ int nuketorch_client_stop(nuketorch_client_t client) {
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
     try {
         w->client->stop();
         return 0;
@@ -120,6 +138,7 @@ int nuketorch_client_abort(nuketorch_client_t client) {
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
     try {
         w->client->abort();
         return 0;
@@ -135,6 +154,7 @@ int nuketorch_client_ping(nuketorch_client_t client) {
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
     try {
         return w->client->ping() ? 0 : -1;
     } catch (const std::exception& e) {
@@ -149,6 +169,7 @@ int nuketorch_client_get_gpu_info(nuketorch_client_t client, char* buf, size_t b
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
     try {
         const std::string s = w->client->getGpuInfo();
         std::strncpy(buf, s.c_str(), buf_size - 1);
@@ -168,16 +189,18 @@ int nuketorch_client_process_frame(nuketorch_client_t client,
                                    nuketorch_inference_metrics* metrics) {
     if (!client || !buffers || !config) {
         if (client) {
-            setError(reinterpret_cast<NuketorchClientOpaque*>(client), "null argument");
+            setError(reinterpret_cast<NuketorchClientOpaque*>(client), "null argument",
+                     NUKETORCH_ERRC_INVALID_ARGUMENT);
         }
         return -1;
     }
     auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
     w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
 
     nuketorch::FrameBuffers fb;
     if (buffers->num_inputs < 1 || !buffers->inputs) {
-        setError(w, "invalid frame buffers");
+        setError(w, "invalid frame buffers", NUKETORCH_ERRC_INVALID_ARGUMENT);
         return -1;
     }
     fb.inputs.assign(buffers->inputs, buffers->inputs + buffers->num_inputs);
@@ -193,6 +216,7 @@ int nuketorch_client_process_frame(nuketorch_client_t client,
     cfg.use_gpu = config->use_gpu != 0;
     cfg.mixed_precision = config->mixed_precision != 0;
     cfg.debug = config->debug != 0;
+    cfg.frame_timeout_ms = config->frame_timeout_ms;
     if (config->params && config->num_params > 0) {
         for (int i = 0; i < config->num_params; ++i) {
             const nuketorch_param& p = config->params[i];

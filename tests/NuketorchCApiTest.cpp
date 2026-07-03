@@ -128,6 +128,40 @@ TEST(NuketorchCApiTest, ProcessFrameWithAbort) {
 
     EXPECT_EQ(nuketorch_client_process_frame(c, &fb, &cfg, alwaysAbort, nullptr, nullptr), -1);
     EXPECT_NE(std::strlen(nuketorch_client_last_error(c)), 0u);
+    EXPECT_EQ(nuketorch_client_last_error_code(c), NUKETORCH_ERRC_CANCELLED);
+
+    nuketorch_client_destroy(c);
+}
+
+TEST(NuketorchCApiTest, FrameTimeoutReportsTimeoutCode) {
+    const std::string socket_path =
+        "/tmp/nuketorch_capi_timeout_" + std::to_string(getpid()) + ".sock";
+    nuketorch_client_t c = nuketorch_client_create(FAKE_WORKER_BIN, socket_path.c_str(), 2);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(nuketorch_client_start(c), 0);
+
+    std::vector<float> in0{1.0f};
+    std::vector<float> in1{2.0f};
+    std::vector<float> out(1, 0.0f);
+    const float* inputs[] = {in0.data(), in1.data()};
+
+    nuketorch_frame_buffers fb{};
+    fb.inputs = inputs;
+    fb.num_inputs = 2;
+    fb.output = out.data();
+    fb.width = 1;
+    fb.height = 1;
+    fb.channels = 1;
+
+    nuketorch_param params[] = {{"sleep_ms", "10000"}};
+    nuketorch_inference_config cfg{};
+    cfg.model_path = "unused.pt";
+    cfg.frame_timeout_ms = 300;
+    cfg.params = params;
+    cfg.num_params = 1;
+
+    EXPECT_EQ(nuketorch_client_process_frame(c, &fb, &cfg, nullptr, nullptr, nullptr), -1);
+    EXPECT_EQ(nuketorch_client_last_error_code(c), NUKETORCH_ERRC_TIMEOUT);
 
     nuketorch_client_destroy(c);
 }
@@ -139,10 +173,11 @@ TEST(NuketorchCApiTest, LastErrorAfterFailure) {
     ASSERT_NE(c, nullptr);
 
     std::vector<float> in0{1.0f};
-    const float* inputs[] = {in0.data()};
+    std::vector<float> in1{2.0f};
+    const float* inputs[] = {in0.data(), in1.data()};
     nuketorch_frame_buffers fb{};
     fb.inputs = inputs;
-    fb.num_inputs = 1;
+    fb.num_inputs = 2;
     fb.output = in0.data();
     fb.width = 1;
     fb.height = 1;
@@ -156,6 +191,7 @@ TEST(NuketorchCApiTest, LastErrorAfterFailure) {
 
     EXPECT_EQ(nuketorch_client_process_frame(c, &fb, &cfg, nullptr, nullptr, nullptr), -1);
     EXPECT_NE(std::strlen(nuketorch_client_last_error(c)), 0u);
+    EXPECT_EQ(nuketorch_client_last_error_code(c), NUKETORCH_ERRC_NOT_STARTED);
 
     nuketorch_client_destroy(c);
 }
