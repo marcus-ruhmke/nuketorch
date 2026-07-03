@@ -39,7 +39,13 @@ AOTInductorBackend::~AOTInductorBackend() = default;
 
 void AOTInductorBackend::load(const std::string& model_path, torch::Device device, torch::ScalarType dtype) {
     (void)dtype;
-    loader_ = std::make_unique<torch::inductor::AOTIModelPackageLoader>(model_path);
+    c10::DeviceIndex idx = -1;
+    if (device.is_cuda()) {
+        idx = device.has_index() ? device.index() : 0;
+    }
+    loader_ = std::make_unique<torch::inductor::AOTIModelPackageLoader>(
+        model_path, /*model_name=*/"model", /*run_single_threaded=*/false,
+        /*num_runners=*/1, /*device_index=*/idx);
     path_ = model_path;
     device_ = device;
     dtype_ = dtype;

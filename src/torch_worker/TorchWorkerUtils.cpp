@@ -1,5 +1,7 @@
 #include <nuketorch/torch_worker/TorchWorkerUtils.h>
 
+#include <ATen/cuda/CUDAContext.h>
+
 namespace nuketorch::torch_worker {
 
 torch::Device resolveDevice(bool use_gpu) {
@@ -7,10 +9,15 @@ torch::Device resolveDevice(bool use_gpu) {
         return torch::kCPU;
     }
     if (torch::cuda::is_available()) {
-        return torch::kCUDA;
+        // Return a Device with an explicit index. `torch::kCUDA` alone
+        // implicitly converts to a Device whose index() is -1 ("unspecified"),
+        // which works for tensor.to(device) but fails any API that calls
+        // device.index() directly (e.g. CUDACachingAllocator::resetPeakStats /
+        // getDeviceStats), with: "Invalid device argument: did you call init?"
+        return torch::Device(torch::kCUDA, at::cuda::current_device());
     }
     if (torch::mps::is_available()) {
-        return torch::kMPS;
+        return torch::Device(torch::kMPS, 0);
     }
     return torch::kCPU;
 }
