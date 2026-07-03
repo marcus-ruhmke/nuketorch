@@ -94,6 +94,7 @@ target_link_libraries(my_plugin PRIVATE nuketorch::nuketorch)
 | Header | Role |
 |--------|------|
 | [`include/nuketorch/InferenceClient.h`](include/nuketorch/InferenceClient.h) | Spawn worker, push frames (copy or zero-copy mapped), timeouts, cancel |
+| [`include/nuketorch/WorkerPool.h`](include/nuketorch/WorkerPool.h) | Share one worker (and one model on the GPU) across node instances in a process |
 | [`include/nuketorch/WorkerHarness.h`](include/nuketorch/WorkerHarness.h) | `workerMain` IPC loop for worker executables |
 | [`include/nuketorch/Errors.h`](include/nuketorch/Errors.h) | Typed exceptions + stable error codes |
 | [`include/nuketorch/IPC.h`](include/nuketorch/IPC.h) | Length-prefixed messages + fd passing over Unix stream sockets |
@@ -103,7 +104,7 @@ target_link_libraries(my_plugin PRIVATE nuketorch::nuketorch)
 | [`include/nuketorch/nuketorch_c.h`](include/nuketorch/nuketorch_c.h) | C API (opaque handle, error codes) |
 | [`include/nuketorch/FreezeDebug.h`](include/nuketorch/FreezeDebug.h) | Opt-in fsync-per-line freeze logger (`NUKETORCH_FREEZE_LOG=<path>`) |
 
-Worker-side torch helpers (TorchScript / AOTInductor / optional TensorRT backends) live under `include/nuketorch/torch_worker/` and build with `-DNUKETORCH_BUILD_TORCH_WORKER=ON`.
+Worker-side torch helpers (TorchScript / AOTInductor / optional TensorRT backends) live under `include/nuketorch/torch_worker/` and build with `-DNUKETORCH_BUILD_TORCH_WORKER=ON`. Precision is selectable per frame via `params["precision"]`: `half` (full FP16 conversion, the `mixed_precision` default), `autocast` (FP32 weights, per-op FP16 — real mixed precision, TorchScript on CUDA), or `float32`. The worker caches frame mappings across requests, so steady-state frames cost no mmap.
 
 See [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md) for an end-to-end integration guide.
 

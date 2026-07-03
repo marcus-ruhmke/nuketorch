@@ -121,6 +121,37 @@ memory, fill them in place, then `processMappedFrame(cfg, ...)` (no vertical
 flip is applied on this path — flip in the worker with `tensor.flip(-2)` on
 GPU, where it is effectively free).
 
+### Sharing one worker across node instances
+
+Ten instances of your node should not mean ten libtorch processes each holding
+the model on the GPU. `WorkerPool` shares one worker per key within the Nuke
+process and serializes access for you:
+
+```cpp
+#include <nuketorch/WorkerPool.h>
+
+// Use the model path as the share key so nodes with different models get
+// different workers instead of thrashing reloads.
+auto worker = nuketorch::WorkerPool::instance().acquire(workerPath, /*num_inputs=*/2,
+                                                        modelPathOnDisk);
+worker.withClient([&](nuketorch::InferenceClient& c) {
+  c.start();  // idempotent; also respawns after a worker death
+  c.processFrame(fb, cfg, [this]() { return aborted(); }, &metrics);
+});
+```
+
+The worker stops when the last node holding a handle is destroyed. Sharing is
+per-process; cross-process pooling (multiple Nuke sessions sharing one worker)
+would need a broker daemon and is deliberately out of scope.
+
+### Precision (torch_worker backends)
+
+`cfg.mixed_precision = true` keeps its historical meaning: the whole module is
+converted to FP16. For real mixed precision set
+`cfg.params["precision"] = "autocast"` — weights stay FP32 and eligible ops run
+FP16 at forward time (TorchScript backend, CUDA only; AOTInductor/TensorRT
+artifacts have precision baked in). `"float32"` forces full precision.
+
 **Canonical reference:** `../nnRetime/src/nnRetime.cpp` (`renderStripe`, worker restart/`ping`, mutex if you serialize GPU access across stripes).
 
 ---
