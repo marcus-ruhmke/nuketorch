@@ -20,6 +20,11 @@ public:
 
     virtual bool isLoaded() const = 0;
     virtual const std::string& loadedPath() const = 0;
+
+    /// Enable autocast (per-op FP16 with FP32 weights) at forward time. Only
+    /// meaningful for backends that execute eager kernels (TorchScript);
+    /// AOTInductor/TensorRT artifacts have their precision baked in and ignore it.
+    virtual void setAutocast(bool enabled) { (void)enabled; }
 };
 
 std::unique_ptr<InferenceBackend> createBackend(const std::string& canonical_backend_name);

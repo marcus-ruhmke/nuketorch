@@ -1,10 +1,36 @@
 #include <nuketorch/torch_worker/TorchScriptBackend.h>
 
+#include <ATen/autocast_mode.h>
+
 #include <stdexcept>
 
 namespace nuketorch::torch_worker {
 
 namespace {
+
+/// Scoped CUDA autocast region. TorchScript dispatches ops through the
+/// dispatcher, so the autocast key intercepts them the same way it does in
+/// eager mode; the cast cache must be cleared when the region ends.
+class CudaAutocastGuard {
+public:
+    explicit CudaAutocastGuard(bool enable) : enabled_(enable) {
+        if (enabled_) {
+            at::autocast::set_autocast_enabled(at::kCUDA, true);
+        }
+    }
+    ~CudaAutocastGuard() {
+        if (enabled_) {
+            at::autocast::clear_cache();
+            at::autocast::set_autocast_enabled(at::kCUDA, false);
+        }
+    }
+
+    CudaAutocastGuard(const CudaAutocastGuard&) = delete;
+    CudaAutocastGuard& operator=(const CudaAutocastGuard&) = delete;
+
+private:
+    bool enabled_;
+};
 
 std::vector<torch::Tensor> iValueToTensorOutputs(const torch::jit::IValue& out) {
     if (out.isTensor()) {
@@ -48,9 +74,14 @@ void TorchScriptBackend::load(const std::string& model_path, torch::Device devic
     model_ = std::make_unique<torch::jit::script::Module>(torch::jit::load(model_path, device));
     model_->eval();
     // Note: this is a full dtype conversion of the whole module (all weights and
-    // buffers), not autocast-style mixed precision.
+    // buffers), not autocast-style mixed precision (see setAutocast for that).
     model_->to(dtype);
     path_ = model_path;
+    device_ = device;
+}
+
+void TorchScriptBackend::setAutocast(bool enabled) {
+    autocast_ = enabled;
 }
 
 std::vector<torch::Tensor> TorchScriptBackend::forward(const std::vector<torch::jit::IValue>& inputs) {
@@ -58,6 +89,7 @@ std::vector<torch::Tensor> TorchScriptBackend::forward(const std::vector<torch::
         throw std::runtime_error("TorchScriptBackend: not loaded");
     }
     torch::InferenceMode guard;
+    CudaAutocastGuard autocast(autocast_ && device_.is_cuda());
     return iValueToTensorOutputs(model_->forward(inputs));
 }
 

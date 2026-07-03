@@ -38,4 +38,24 @@ std::string backendNameFromParams(const std::unordered_map<std::string, std::str
                                 "\" (expected torchscript, aotinductor, or tensorrt)");
 }
 
+PrecisionMode precisionModeFromParams(const std::unordered_map<std::string, std::string>& params,
+                                      bool mixed_precision) {
+    const auto it = params.find("precision");
+    if (it == params.end()) {
+        return mixed_precision ? PrecisionMode::half : PrecisionMode::full;
+    }
+    const std::string v = toLower(it->second);
+    if (v == "half" || v == "fp16" || v == "float16") {
+        return PrecisionMode::half;
+    }
+    if (v == "autocast" || v == "amp") {
+        return PrecisionMode::autocast;
+    }
+    if (v == "float32" || v == "fp32" || v == "float" || v == "full") {
+        return PrecisionMode::full;
+    }
+    throw std::invalid_argument("unknown precision \"" + it->second +
+                                "\" (expected half, autocast, or float32)");
+}
+
 }  // namespace nuketorch::torch_worker

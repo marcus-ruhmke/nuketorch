@@ -33,7 +33,10 @@ void BackendCache::ensure(const FrameHeader& header,
                           nuketorch::InferenceMetrics* metrics) {
     const std::string kind = backendNameFromParams(params);
     torch::Device device = resolveDevice(header.use_gpu);
-    const bool use_half = header.mixed_precision && device.type() != torch::kCPU;
+    const PrecisionMode precision = precisionModeFromParams(params, header.mixed_precision);
+    const bool use_half = precision == PrecisionMode::half && device.type() != torch::kCPU;
+    // Autocast keeps FP32 weights and casts per-op at forward time; CUDA only.
+    const bool use_autocast = precision == PrecisionMode::autocast && device.is_cuda();
     const torch::ScalarType dtype = use_half ? torch::kFloat16 : torch::kFloat32;
 
     const bool need_switch_kind = !impl_ || kind != backend_kind_;
@@ -60,10 +63,12 @@ void BackendCache::ensure(const FrameHeader& header,
         metrics->model_load_ms = -1;
     }
 
+    impl_->setAutocast(use_autocast);
+
     if (metrics) {
         metrics->backend = backend_kind_;
         metrics->device = deviceToString(device_);
-        metrics->dtype = scalarTypeLabel(dtype_);
+        metrics->dtype = use_autocast ? "autocast(float16)" : scalarTypeLabel(dtype_);
     }
 }
 
