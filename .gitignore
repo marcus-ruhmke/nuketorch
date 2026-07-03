@@ -1,5 +1,4 @@
-/build/
-/build-torch/
+/build*/
 *.o
 *.a
 CMakeCache.txt
