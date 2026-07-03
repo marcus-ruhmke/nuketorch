@@ -21,13 +21,12 @@ public:
     const std::string& loadedPath() const override;
 
 private:
-    /// Frees TensorRT objects and stream; clears I/O names and path. Safe to call multiple times.
+    /// Frees TensorRT objects; clears I/O names and path. Safe to call multiple times.
     void releaseTensorRtResources() noexcept;
 
     nvinfer1::IRuntime* runtime_ = nullptr;
     nvinfer1::ICudaEngine* engine_ = nullptr;
     nvinfer1::IExecutionContext* context_ = nullptr;
-    cudaStream_t stream_ = nullptr;
 
     std::vector<std::string> input_names_;
     std::vector<std::string> output_names_;

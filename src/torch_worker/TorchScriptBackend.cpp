@@ -44,9 +44,11 @@ std::vector<torch::Tensor> iValueToTensorOutputs(const torch::jit::IValue& out) 
 }  // namespace
 
 void TorchScriptBackend::load(const std::string& model_path, torch::Device device, torch::ScalarType dtype) {
-    model_ = std::make_unique<torch::jit::script::Module>(torch::jit::load(model_path));
+    // Load straight onto the target device instead of staging through CPU.
+    model_ = std::make_unique<torch::jit::script::Module>(torch::jit::load(model_path, device));
     model_->eval();
-    model_->to(device);
+    // Note: this is a full dtype conversion of the whole module (all weights and
+    // buffers), not autocast-style mixed precision.
     model_->to(dtype);
     path_ = model_path;
 }

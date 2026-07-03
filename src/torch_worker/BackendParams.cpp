@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 
 namespace nuketorch::torch_worker {
 
@@ -31,7 +32,10 @@ std::string backendNameFromParams(const std::unordered_map<std::string, std::str
     if (v == "torchscript" || v == "jit" || v == "ts") {
         return kBackendTorchScript;
     }
-    return kBackendTorchScript;
+    // A typo must not silently fall back to TorchScript and then fail with a
+    // baffling "invalid TorchScript archive" on a .engine/.pt2 file.
+    throw std::invalid_argument("unknown backend \"" + it->second +
+                                "\" (expected torchscript, aotinductor, or tensorrt)");
 }
 
 }  // namespace nuketorch::torch_worker

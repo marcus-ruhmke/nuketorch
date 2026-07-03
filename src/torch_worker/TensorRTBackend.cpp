@@ -1,5 +1,6 @@
 #include <nuketorch/torch_worker/TensorRTBackend.h>
 
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
@@ -101,13 +102,6 @@ std::vector<torch::Tensor> iValuesToTensors(const std::vector<torch::jit::IValue
 }  // namespace
 
 void TensorRTBackend::releaseTensorRtResources() noexcept {
-    if (stream_) {
-        if (device_.is_cuda()) {
-            cudaSetDevice(device_.has_index() ? static_cast<int>(device_.index()) : 0);
-        }
-        cudaStreamDestroy(stream_);
-        stream_ = nullptr;
-    }
     if (context_) {
         delete context_;
         context_ = nullptr;
@@ -185,16 +179,12 @@ void TensorRTBackend::load(const std::string& model_path, torch::Device device, 
         }
     }
 
-    if (cudaStreamCreate(&stream_) != cudaSuccess) {
-        throw std::runtime_error("TensorRTBackend: cudaStreamCreate failed");
-    }
-
     path_ = model_path;
     device_ = device;
 }
 
 std::vector<torch::Tensor> TensorRTBackend::forward(const std::vector<torch::jit::IValue>& inputs) {
-    if (!engine_ || !context_ || !stream_) {
+    if (!engine_ || !context_) {
         throw std::runtime_error("TensorRTBackend: not loaded");
     }
     if (!device_.is_cuda()) {
@@ -242,10 +232,14 @@ std::vector<torch::Tensor> TensorRTBackend::forward(const std::vector<torch::jit
         outputs.push_back(std::move(t));
     }
 
-    if (!context_->enqueueV3(stream_)) {
+    // Run on torch's current stream: the input `.to(device, non_blocking)` copies
+    // and the output allocations above are ordered on that stream, so a private
+    // stream would race them (pinned-host copies are genuinely asynchronous).
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream(device_.index()).stream();
+    if (!context_->enqueueV3(stream)) {
         throw std::runtime_error("TensorRTBackend: enqueueV3 failed");
     }
-    if (cudaStreamSynchronize(stream_) != cudaSuccess) {
+    if (cudaStreamSynchronize(stream) != cudaSuccess) {
         throw std::runtime_error("TensorRTBackend: cudaStreamSynchronize failed");
     }
 

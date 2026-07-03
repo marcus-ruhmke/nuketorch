@@ -13,6 +13,7 @@ inline constexpr const char* kBackendAOTInductor = "aotinductor";
 inline constexpr const char* kBackendTensorRT = "tensorrt";
 
 /// Reads `params["backend"]` (case-insensitive) and returns a canonical backend name.
+/// Throws std::invalid_argument for unrecognized values; absent means TorchScript.
 std::string backendNameFromParams(const std::unordered_map<std::string, std::string>& params);
 
 }  // namespace nuketorch::torch_worker
