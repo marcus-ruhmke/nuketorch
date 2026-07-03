@@ -9,12 +9,15 @@
 #include <nuketorch/SharedMemoryBuffer.h>
 
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -48,6 +51,97 @@ public:
 
 private:
     std::vector<int> fds_;
+};
+
+/// Caches adopted memfd mappings across requests. The client reuses its
+/// segments frame-to-frame (reallocating only on growth), so re-mmapping a
+/// ~100 MB frame every request is pure overhead; a cache hit costs one fstat.
+/// Keyed by (st_dev, st_ino, st_ctim): memfd inode numbers come from a 32-bit
+/// counter and can in principle be recycled, so the creation timestamp is
+/// included to make a stale hit require an exact ns-level ctime collision too.
+class MappingCache {
+public:
+    /// Takes ownership of @p fd. Returns a mapping covering at least @p bytes.
+    /// The pointer stays valid until endRequest() decides to evict the entry
+    /// (never within the request that used it).
+    void* acquire(int fd, size_t bytes) {
+        struct stat st{};
+        if (fstat(fd, &st) == -1) {
+            const int err = errno;
+            ::close(fd);
+            throw Error(ErrorCode::internal,
+                        std::string("fstat failed on frame fd: ") + std::strerror(err));
+        }
+        if (st.st_size < 0 || static_cast<size_t>(st.st_size) < bytes) {
+            ::close(fd);
+            throw BadRequestError("shared memory segment smaller than requested mapping");
+        }
+
+        const Key key{st.st_dev, st.st_ino, st.st_ctim.tv_sec, st.st_ctim.tv_nsec};
+        auto it = map_.find(key);
+        if (it != map_.end() && it->second.buf.size() >= bytes) {
+            ::close(fd);
+            it->second.last_used = tick_;
+            return it->second.buf.data();
+        }
+        if (it != map_.end()) {
+            map_.erase(it);  // same segment, previously mapped smaller
+        }
+
+        // Map the whole segment so a later, larger frame in the same segment
+        // still hits the cache.
+        SharedMemoryBuffer buf =
+            SharedMemoryBuffer::adopt(fd, static_cast<size_t>(st.st_size));
+        void* ptr = buf.data();
+        map_.emplace(key, Entry{std::move(buf), tick_});
+        return ptr;
+    }
+
+    /// Advances the clock and evicts least-recently-used entries beyond the cap.
+    /// Entries used by the current request are never evicted here (cap exceeds
+    /// any single request's fd count).
+    void endRequest() {
+        ++tick_;
+        while (map_.size() > kMaxEntries) {
+            auto oldest = map_.begin();
+            for (auto it = map_.begin(); it != map_.end(); ++it) {
+                if (it->second.last_used < oldest->second.last_used) {
+                    oldest = it;
+                }
+            }
+            map_.erase(oldest);
+        }
+    }
+
+private:
+    static constexpr size_t kMaxEntries = 2 * kMaxFdsPerMessage;
+
+    struct Key {
+        dev_t dev;
+        ino_t ino;
+        time_t ctime_sec;
+        long ctime_nsec;
+        bool operator==(const Key& o) const {
+            return dev == o.dev && ino == o.ino && ctime_sec == o.ctime_sec &&
+                   ctime_nsec == o.ctime_nsec;
+        }
+    };
+    struct KeyHash {
+        size_t operator()(const Key& k) const {
+            size_t h = std::hash<unsigned long long>()(static_cast<unsigned long long>(k.ino));
+            h ^= std::hash<unsigned long long>()(static_cast<unsigned long long>(k.dev)) * 31u;
+            h ^= std::hash<long long>()(static_cast<long long>(k.ctime_sec)) * 131u;
+            h ^= std::hash<long long>()(static_cast<long long>(k.ctime_nsec)) * 1313u;
+            return h;
+        }
+    };
+    struct Entry {
+        SharedMemoryBuffer buf;
+        uint64_t last_used;
+    };
+
+    std::unordered_map<Key, Entry, KeyHash> map_;
+    uint64_t tick_ = 0;
 };
 
 /// If @p msg is "<command>|<decimal id>", returns true and fills @p id_str.
@@ -98,6 +192,8 @@ int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallba
         IPCClient client(socket_path);
         client.send("READY|" + std::to_string(kProtocolVersion));
         FREEZE_LOG("WORKER", "READY|%u sent, entering message loop", kProtocolVersion);
+
+        MappingCache mappings;
 
         while (true) {
             std::vector<int> raw_fds;
@@ -156,23 +252,18 @@ int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallba
             }
 
             try {
-                std::vector<SharedMemoryBuffer> input_bufs;
-                input_bufs.reserve(req.num_inputs);
                 std::vector<void*> input_ptrs;
                 input_ptrs.reserve(req.num_inputs);
                 for (uint32_t i = 0; i < req.num_inputs; ++i) {
-                    input_bufs.push_back(SharedMemoryBuffer::adopt(fds.take(i), bytes));
-                    input_ptrs.push_back(input_bufs.back().data());
+                    input_ptrs.push_back(mappings.acquire(fds.take(i), bytes));
                 }
-                SharedMemoryBuffer out_buf =
-                    SharedMemoryBuffer::adopt(fds.take(req.num_inputs), bytes);
-                SharedMemoryBuffer cancel_buf =
-                    SharedMemoryBuffer::adopt(fds.take(req.num_inputs + 1), sizeof(uint32_t));
+                void* output_ptr = mappings.acquire(fds.take(req.num_inputs), bytes);
+                const uint32_t* cancel_ptr = static_cast<const uint32_t*>(
+                    mappings.acquire(fds.take(req.num_inputs + 1), sizeof(uint32_t)));
 
-                const uint32_t* cancel_ptr = static_cast<const uint32_t*>(cancel_buf.data());
                 WorkerContext ctx{req,
                                   std::move(input_ptrs),
-                                  out_buf.data(),
+                                  output_ptr,
                                   bytes,
                                   [cancel_ptr]() {
                                       return __atomic_load_n(cancel_ptr, __ATOMIC_SEQ_CST) != 0;
@@ -199,6 +290,7 @@ int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallba
                 // Mapping failures (fstat/mmap) must fail the frame, not the worker.
                 client.send(prefix + "ERR|exception|" + e.what());
             }
+            mappings.endRequest();
         }
     } catch (const IPCClosedError&) {
         return 0;

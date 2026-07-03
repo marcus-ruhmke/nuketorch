@@ -243,6 +243,48 @@ TEST(InferenceClientTest, SpawnFailureIsReportedWithReason) {
     }
 }
 
+TEST(InferenceClientTest, RepeatedAndGrowingFramesReuseWorker) {
+    nuketorch::InferenceClient client(FAKE_WORKER_BIN, uniqueSocketPath("reuse"), 2);
+    client.start();
+
+    nuketorch::InferenceConfig cfg;
+    cfg.model_path = "unused.pt";
+    cfg.params["timestep"] = "0.25";
+
+    // Two identical frames: the second hits the worker-side mapping cache.
+    for (int round = 0; round < 2; ++round) {
+        std::vector<float> in0{1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+        std::vector<float> in1{7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f};
+        std::vector<float> out(6, 0.0f);
+        nuketorch::FrameBuffers buffers = makeBuffers(in0, in1, out);
+        client.processFrame(buffers, cfg);
+        for (size_t i = 0; i < out.size(); ++i) {
+            EXPECT_FLOAT_EQ(out[i], ((in0[i] + in1[i]) * 0.5f) + 0.25f) << "round " << round;
+        }
+    }
+
+    // A larger frame forces the client to reallocate segments; the worker must
+    // map the new ones, not reuse stale cache entries.
+    const size_t count = 4 * 2 * 3;
+    std::vector<float> big0(count), big1(count), big_out(count, 0.0f);
+    for (size_t i = 0; i < count; ++i) {
+        big0[i] = static_cast<float>(i);
+        big1[i] = static_cast<float>(2 * i);
+    }
+    nuketorch::FrameBuffers big;
+    big.inputs = {big0.data(), big1.data()};
+    big.output = big_out.data();
+    big.width = 4;
+    big.height = 2;
+    big.channels = 3;
+    client.processFrame(big, cfg);
+    for (size_t i = 0; i < count; ++i) {
+        EXPECT_FLOAT_EQ(big_out[i], ((big0[i] + big1[i]) * 0.5f) + 0.25f);
+    }
+
+    client.stop();
+}
+
 TEST(InferenceClientTest, ConstructorRejectsTooManyInputs) {
     // [inputs..., output, cancel] must fit the per-message SCM_RIGHTS cap; fail
     // at construction, not on the first frame.
