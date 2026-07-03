@@ -1,8 +1,26 @@
 #include <nuketorch/ImageUtils.h>
 
+#include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace nuketorch {
+
+bool computeFrameBytes(int width, int height, int channels, size_t& bytes_out) {
+    if (width <= 0 || height <= 0 || channels <= 0) {
+        return false;
+    }
+    const uint64_t wh = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    if (wh > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(channels)) {
+        return false;
+    }
+    const uint64_t pixels = wh * static_cast<uint64_t>(channels);
+    if (pixels > std::numeric_limits<size_t>::max() / sizeof(float)) {
+        return false;
+    }
+    bytes_out = static_cast<size_t>(pixels) * sizeof(float);
+    return true;
+}
 
 void copyPlanarWithVerticalFlip(const float* src, float* dst, int width, int height, int channels) {
     const size_t row_bytes = static_cast<size_t>(width) * sizeof(float);

@@ -3,9 +3,12 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace nuketorch {
+
+/// Wire protocol version spoken by this build. The worker announces it in the
+/// `READY|<version>` handshake and the client refuses to talk to a mismatch.
+inline constexpr uint32_t kProtocolVersion = 2;
 
 /// Image dimensions and run flags carried with every inference request (host and worker agree on these fields).
 struct FrameHeader {
@@ -17,7 +20,7 @@ struct FrameHeader {
     int channels = 0;
     /// Prefer CUDA/MPS when available in the worker.
     bool use_gpu = true;
-    /// Use half precision on GPU when supported.
+    /// Convert the model to half precision on GPU (full FP16, not autocast) when supported.
     bool mixed_precision = true;
     /// If true, workers may enable verbose logging.
     bool debug = false;
@@ -25,13 +28,16 @@ struct FrameHeader {
     std::string model_path;
 };
 
-/// One inference job: where frame data lives in shared memory plus model-specific parameters as strings.
+/// One inference job. Frame buffers are anonymous memfd segments whose file
+/// descriptors travel as SCM_RIGHTS ancillary data on the same socket message,
+/// ordered `[input 0 .. input N-1, output, cancel-flag]`. The payload itself
+/// only carries the expected input count so the worker can validate the fd set.
 struct InferenceRequest {
     FrameHeader header;
-    /// One POSIX shm name per input plane (length `num_inputs` on the wire).
-    std::vector<std::string> shm_inputs;
-    /// POSIX shm name for the output buffer (single plane, same layout as inputs).
-    std::string shm_output;
+    /// Monotonically increasing per-connection id; the worker echoes it in the `R|<id>|...` reply.
+    uint64_t request_id = 0;
+    /// Number of input planes; must match the number of input fds sent with the message.
+    uint32_t num_inputs = 0;
     /// Model-specific options (e.g. `"timestep"`, `"max_depth"`); values are opaque strings parsed by the worker.
     std::unordered_map<std::string, std::string> params;
 };

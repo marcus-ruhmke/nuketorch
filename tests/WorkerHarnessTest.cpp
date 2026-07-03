@@ -5,12 +5,11 @@
 #include <nuketorch/Protocol.h>
 #include <nuketorch/SharedMemoryBuffer.h>
 
-#include <cstring>
-
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -22,50 +21,61 @@
 #define FAKE_WORKER_BIN "./FakeWorker"
 #endif
 
+namespace {
+
+const std::string kReady = "READY|" + std::to_string(nuketorch::kProtocolVersion);
+
+std::string uniqueSocketPath(const char* tag) {
+    return "/tmp/nuketorch_harness_" + std::string(tag) + "_" + std::to_string(getpid()) + ".sock";
+}
+
+pid_t spawnWorker(const char* binary, const std::string& socket_path) {
+    const pid_t child = fork();
+    if (child == 0) {
+        execl(binary, binary, socket_path.c_str(), nullptr);
+        _exit(127);
+    }
+    return child;
+}
+
+void expectCleanExit(pid_t child) {
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+}  // namespace
+
 TEST(WorkerHarnessTest, HandshakePingAndShutdown) {
-    const std::string socket_path =
-        "/tmp/nuketorch_harness_smoke_" + std::to_string(getpid()) + ".sock";
-
+    const std::string socket_path = uniqueSocketPath("smoke");
     nuketorch::IPCServer server(socket_path);
 
-    const pid_t child = fork();
+    const pid_t child = spawnWorker(HARNESS_SMOKE_BIN, socket_path);
     ASSERT_NE(child, -1);
-    if (child == 0) {
-        execl(HARNESS_SMOKE_BIN, HARNESS_SMOKE_BIN, socket_path.c_str(), nullptr);
-        _exit(127);
-    }
 
-    const std::string ready = server.receive(-1);
-    EXPECT_EQ(ready, "READY");
+    EXPECT_EQ(server.receive(5000), kReady);
 
-    server.send("PING");
-    const std::string pong = server.receive(-1);
-    EXPECT_EQ(pong, "PONG");
+    server.send("PING|1");
+    EXPECT_EQ(server.receive(5000), "R|1|PONG");
 
-    server.send("QUIT");
-    const std::string bye = server.receive(-1);
-    EXPECT_EQ(bye, "BYE");
+    server.send("GPUINFO|2");
+    EXPECT_EQ(server.receive(5000), "R|2|OK|test-gpu");
 
-    int status = 0;
-    ASSERT_EQ(waitpid(child, &status, 0), child);
-    EXPECT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 0);
+    server.send("QUIT|3");
+    EXPECT_EQ(server.receive(5000), "R|3|BYE");
+
+    expectCleanExit(child);
 }
 
-TEST(WorkerHarnessTest, MetricsRoundTripThroughHarness) {
-    const std::string socket_path =
-        "/tmp/nuketorch_harness_metrics_" + std::to_string(getpid()) + ".sock";
-
+TEST(WorkerHarnessTest, ProcessCallsCallbackAndReturnsMetrics) {
+    const std::string socket_path = uniqueSocketPath("proc");
     nuketorch::IPCServer server(socket_path);
 
-    const pid_t child = fork();
+    const pid_t child = spawnWorker(FAKE_WORKER_BIN, socket_path);
     ASSERT_NE(child, -1);
-    if (child == 0) {
-        execl(FAKE_WORKER_BIN, FAKE_WORKER_BIN, socket_path.c_str(), nullptr);
-        _exit(127);
-    }
 
-    ASSERT_EQ(server.receive(-1), "READY");
+    ASSERT_EQ(server.receive(5000), kReady);
 
     const int w = 2;
     const int h = 1;
@@ -73,114 +83,109 @@ TEST(WorkerHarnessTest, MetricsRoundTripThroughHarness) {
     const size_t count = static_cast<size_t>(w) * h * c;
     const size_t bytes = count * sizeof(float);
 
-    const std::string shm0 = "/nuketorch_hm_in0_" + std::to_string(getpid());
-    const std::string shm1 = "/nuketorch_hm_in1_" + std::to_string(getpid());
-    const std::string shmo = "/nuketorch_hm_out_" + std::to_string(getpid());
-
     std::vector<float> in0 = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     std::vector<float> in1 = {7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f};
 
-    {
-        nuketorch::SharedMemoryBuffer b0(shm0, bytes, true);
-        nuketorch::SharedMemoryBuffer b1(shm1, bytes, true);
-        nuketorch::SharedMemoryBuffer bo(shmo, bytes, true);
-        std::memcpy(b0.data(), in0.data(), bytes);
-        std::memcpy(b1.data(), in1.data(), bytes);
+    auto b0 = nuketorch::SharedMemoryBuffer::create(bytes);
+    auto b1 = nuketorch::SharedMemoryBuffer::create(bytes);
+    auto bo = nuketorch::SharedMemoryBuffer::create(bytes);
+    auto cancel = nuketorch::SharedMemoryBuffer::create(sizeof(uint32_t));
+    std::memcpy(b0.data(), in0.data(), bytes);
+    std::memcpy(b1.data(), in1.data(), bytes);
+    std::memset(cancel.data(), 0, sizeof(uint32_t));
 
-        nuketorch::InferenceRequest req;
-        req.shm_inputs = {shm0, shm1};
-        req.shm_output = shmo;
-        req.header.model_path = "unused.pt";
-        req.header.width = w;
-        req.header.height = h;
-        req.header.channels = c;
+    nuketorch::InferenceRequest req;
+    req.request_id = 7;
+    req.num_inputs = 2;
+    req.header.model_path = "unused.pt";
+    req.header.width = w;
+    req.header.height = h;
+    req.header.channels = c;
+    req.params["timestep"] = "0.25";
 
-        server.send(nuketorch::serialize(req));
-        const std::string reply = server.receive(-1);
-        nuketorch::InferenceMetrics metrics;
-        std::string err;
-        ASSERT_TRUE(nuketorch::parseInferenceOkResponse(reply, metrics, err)) << err;
-        EXPECT_DOUBLE_EQ(metrics.backend_forward_ms, 42.0);
+    server.sendWithFds(nuketorch::serialize(req), {b0.fd(), b1.fd(), bo.fd(), cancel.fd()});
+
+    const std::string reply = server.receive(5000);
+    const std::string prefix = "R|7|OK";
+    ASSERT_GE(reply.size(), prefix.size());
+    ASSERT_EQ(reply.substr(0, prefix.size()), prefix);
+
+    nuketorch::InferenceMetrics metrics;
+    std::string err;
+    ASSERT_TRUE(nuketorch::parseInferenceOkResponse(reply.substr(4), metrics, err)) << err;
+    EXPECT_DOUBLE_EQ(metrics.backend_forward_ms, 42.0);
+    EXPECT_EQ(metrics.backend, "fake");
+    EXPECT_EQ(metrics.device, "cpu");
+    EXPECT_EQ(metrics.dtype, "float32");
+
+    std::vector<float> out(count);
+    std::memcpy(out.data(), bo.data(), bytes);
+    for (size_t i = 0; i < count; ++i) {
+        const float expected = ((in0[i] + in1[i]) * 0.5f) + 0.25f;
+        EXPECT_FLOAT_EQ(out[i], expected);
     }
 
-    server.send("QUIT");
-    ASSERT_EQ(server.receive(-1), "BYE");
-
-    int status = 0;
-    ASSERT_EQ(waitpid(child, &status, 0), child);
-    EXPECT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 0);
+    server.send("QUIT|8");
+    EXPECT_EQ(server.receive(5000), "R|8|BYE");
+    expectCleanExit(child);
 }
 
-TEST(WorkerHarnessTest, ProcessCallsCallback) {
-    const std::string socket_path =
-        "/tmp/nuketorch_harness_proc_" + std::to_string(getpid()) + ".sock";
-
+TEST(WorkerHarnessTest, FdCountMismatchIsBadRequest) {
+    const std::string socket_path = uniqueSocketPath("badfd");
     nuketorch::IPCServer server(socket_path);
 
-    const pid_t child = fork();
+    const pid_t child = spawnWorker(FAKE_WORKER_BIN, socket_path);
     ASSERT_NE(child, -1);
-    if (child == 0) {
-        execl(FAKE_WORKER_BIN, FAKE_WORKER_BIN, socket_path.c_str(), nullptr);
-        _exit(127);
-    }
 
-    ASSERT_EQ(server.receive(-1), "READY");
+    ASSERT_EQ(server.receive(5000), kReady);
 
-    const int w = 2;
-    const int h = 1;
-    const int c = 3;
-    const size_t count = static_cast<size_t>(w) * h * c;
-    const size_t bytes = count * sizeof(float);
+    const size_t bytes = 4 * sizeof(float);
+    auto b0 = nuketorch::SharedMemoryBuffer::create(bytes);
 
-    const std::string shm0 = "/nuketorch_hwtest_in0_" + std::to_string(getpid());
-    const std::string shm1 = "/nuketorch_hwtest_in1_" + std::to_string(getpid());
-    const std::string shmo = "/nuketorch_hwtest_out_" + std::to_string(getpid());
+    nuketorch::InferenceRequest req;
+    req.request_id = 9;
+    req.num_inputs = 2;  // promises 2 inputs + output + cancel = 4 fds, sends 1
+    req.header.model_path = "unused.pt";
+    req.header.width = 2;
+    req.header.height = 1;
+    req.header.channels = 2;
 
-    std::vector<float> in0 = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
-    std::vector<float> in1 = {7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f};
+    server.sendWithFds(nuketorch::serialize(req), {b0.fd()});
 
-    {
-        nuketorch::SharedMemoryBuffer b0(shm0, bytes, true);
-        nuketorch::SharedMemoryBuffer b1(shm1, bytes, true);
-        nuketorch::SharedMemoryBuffer bo(shmo, bytes, true);
-        std::memcpy(b0.data(), in0.data(), bytes);
-        std::memcpy(b1.data(), in1.data(), bytes);
+    const std::string reply = server.receive(5000);
+    EXPECT_EQ(reply.rfind("R|9|ERR|bad_request|", 0), 0u) << reply;
 
-        nuketorch::InferenceRequest req;
-        req.shm_inputs = {shm0, shm1};
-        req.shm_output = shmo;
-        req.header.model_path = "unused.pt";
-        req.header.width = w;
-        req.header.height = h;
-        req.header.channels = c;
-        req.params["timestep"] = "0.25";
+    // The worker must survive a bad request and keep serving.
+    server.send("PING|10");
+    EXPECT_EQ(server.receive(5000), "R|10|PONG");
 
-        server.send(nuketorch::serialize(req));
-        const std::string reply = server.receive(-1);
-        ASSERT_GE(reply.size(), 2u);
-        EXPECT_EQ(reply.substr(0, 2), "OK");
-        nuketorch::InferenceMetrics metrics;
-        std::string err;
-        ASSERT_TRUE(nuketorch::parseInferenceOkResponse(reply, metrics, err)) << err;
-        EXPECT_DOUBLE_EQ(metrics.backend_forward_ms, 42.0);
-        EXPECT_EQ(metrics.backend, "fake");
-        EXPECT_EQ(metrics.device, "cpu");
-        EXPECT_EQ(metrics.dtype, "float32");
+    server.send("QUIT|11");
+    EXPECT_EQ(server.receive(5000), "R|11|BYE");
+    expectCleanExit(child);
+}
 
-        std::vector<float> out(count);
-        std::memcpy(out.data(), bo.data(), bytes);
-        for (size_t i = 0; i < count; ++i) {
-            const float expected = ((in0[i] + in1[i]) * 0.5f) + 0.25f;
-            EXPECT_FLOAT_EQ(out[i], expected);
-        }
-    }
+TEST(WorkerHarnessTest, InvalidDimensionsAreBadRequest) {
+    const std::string socket_path = uniqueSocketPath("baddim");
+    nuketorch::IPCServer server(socket_path);
 
-    server.send("QUIT");
-    ASSERT_EQ(server.receive(-1), "BYE");
+    const pid_t child = spawnWorker(FAKE_WORKER_BIN, socket_path);
+    ASSERT_NE(child, -1);
 
-    int status = 0;
-    ASSERT_EQ(waitpid(child, &status, 0), child);
-    EXPECT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 0);
+    ASSERT_EQ(server.receive(5000), kReady);
+
+    nuketorch::InferenceRequest req;
+    req.request_id = 12;
+    req.num_inputs = 2;
+    req.header.model_path = "unused.pt";
+    req.header.width = 0;
+    req.header.height = 1;
+    req.header.channels = 1;
+
+    server.send(nuketorch::serialize(req));
+    const std::string reply = server.receive(5000);
+    EXPECT_EQ(reply.rfind("R|12|ERR|bad_request|", 0), 0u) << reply;
+
+    server.send("QUIT|13");
+    EXPECT_EQ(server.receive(5000), "R|13|BYE");
+    expectCleanExit(child);
 }

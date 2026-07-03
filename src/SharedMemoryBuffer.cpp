@@ -1,6 +1,7 @@
 #include <nuketorch/SharedMemoryBuffer.h>
 
-#include <fcntl.h>
+#include <nuketorch/Errors.h>
+
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -10,31 +11,49 @@
 
 namespace nuketorch {
 
-SharedMemoryBuffer::SharedMemoryBuffer(const std::string& name, size_t size, bool create)
-    : name_(name), size_(size), ptr_(MAP_FAILED), fd_(-1), is_creator_(create) {
-    if (create) {
-        shm_unlink(name_.c_str());
-
-        fd_ = shm_open(name_.c_str(), O_CREAT | O_RDWR | O_EXCL, 0666);
-        if (fd_ == -1) {
-            throw std::runtime_error("shm_open failed for " + name_ + ": " + std::strerror(errno));
-        }
-
-        if (ftruncate(fd_, size_) == -1) {
-            cleanup();
-            throw std::runtime_error("ftruncate failed for " + name_ + ": " + std::strerror(errno));
-        }
-    } else {
-        fd_ = shm_open(name_.c_str(), O_RDWR, 0666);
-        if (fd_ == -1) {
-            throw std::runtime_error("shm_open (read) failed for " + name_ + ": " + std::strerror(errno));
-        }
+SharedMemoryBuffer SharedMemoryBuffer::create(size_t size) {
+    if (size == 0) {
+        throw Error(ErrorCode::invalid_argument, "shared memory size must be > 0");
     }
+    const int fd = memfd_create("nuketorch-frame", MFD_CLOEXEC);
+    if (fd == -1) {
+        throw Error(ErrorCode::internal,
+                    std::string("memfd_create failed: ") + std::strerror(errno));
+    }
+    if (ftruncate(fd, static_cast<off_t>(size)) == -1) {
+        const int err = errno;
+        ::close(fd);
+        throw Error(ErrorCode::internal,
+                    std::string("ftruncate failed: ") + std::strerror(err));
+    }
+    return SharedMemoryBuffer(fd, size);
+}
 
+SharedMemoryBuffer SharedMemoryBuffer::adopt(int fd, size_t size) {
+    if (fd < 0 || size == 0) {
+        throw Error(ErrorCode::invalid_argument, "invalid fd or size for shared memory adopt");
+    }
+    struct stat st{};
+    if (fstat(fd, &st) == -1) {
+        const int err = errno;
+        ::close(fd);
+        throw Error(ErrorCode::internal, std::string("fstat failed: ") + std::strerror(err));
+    }
+    if (st.st_size < 0 || static_cast<size_t>(st.st_size) < size) {
+        ::close(fd);
+        throw BadRequestError("shared memory segment smaller than requested mapping");
+    }
+    return SharedMemoryBuffer(fd, size);
+}
+
+SharedMemoryBuffer::SharedMemoryBuffer(int fd, size_t size)
+    : size_(size), ptr_(MAP_FAILED), fd_(fd) {
     ptr_ = mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
     if (ptr_ == MAP_FAILED) {
-        cleanup();
-        throw std::runtime_error("mmap failed for " + name_ + ": " + std::strerror(errno));
+        const int err = errno;
+        ::close(fd_);
+        fd_ = -1;
+        throw Error(ErrorCode::internal, std::string("mmap failed: ") + std::strerror(err));
     }
 }
 
@@ -43,28 +62,20 @@ SharedMemoryBuffer::~SharedMemoryBuffer() {
 }
 
 SharedMemoryBuffer::SharedMemoryBuffer(SharedMemoryBuffer&& other) noexcept
-    : name_(std::move(other.name_)),
-      size_(other.size_),
-      ptr_(other.ptr_),
-      fd_(other.fd_),
-      is_creator_(other.is_creator_) {
+    : size_(other.size_), ptr_(other.ptr_), fd_(other.fd_) {
     other.ptr_ = MAP_FAILED;
     other.fd_ = -1;
-    other.is_creator_ = false;
 }
 
 SharedMemoryBuffer& SharedMemoryBuffer::operator=(SharedMemoryBuffer&& other) noexcept {
     if (this != &other) {
         cleanup();
-        name_ = std::move(other.name_);
         size_ = other.size_;
         ptr_ = other.ptr_;
         fd_ = other.fd_;
-        is_creator_ = other.is_creator_;
 
         other.ptr_ = MAP_FAILED;
         other.fd_ = -1;
-        other.is_creator_ = false;
     }
     return *this;
 }
@@ -77,10 +88,6 @@ void SharedMemoryBuffer::cleanup() {
     if (fd_ != -1) {
         close(fd_);
         fd_ = -1;
-    }
-    if (is_creator_) {
-        shm_unlink(name_.c_str());
-        is_creator_ = false;
     }
 }
 

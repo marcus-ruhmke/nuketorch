@@ -13,6 +13,11 @@ void appendU32(std::string& out, uint32_t v) {
     out.append(reinterpret_cast<const char*>(&net), sizeof(net));
 }
 
+void appendU64(std::string& out, uint64_t v) {
+    appendU32(out, static_cast<uint32_t>(v >> 32));
+    appendU32(out, static_cast<uint32_t>(v & 0xFFFFFFFFu));
+}
+
 void appendI32(std::string& out, int32_t v) {
     appendU32(out, static_cast<uint32_t>(v));
 }
@@ -38,6 +43,16 @@ bool readU32(const std::string& in, size_t& off, uint32_t& out, std::string& err
     std::memcpy(&net, in.data() + off, sizeof(net));
     out = ntohl(net);
     off += sizeof(net);
+    return true;
+}
+
+bool readU64(const std::string& in, size_t& off, uint64_t& out, std::string& error) {
+    uint32_t hi = 0;
+    uint32_t lo = 0;
+    if (!readU32(in, off, hi, error) || !readU32(in, off, lo, error)) {
+        return false;
+    }
+    out = (static_cast<uint64_t>(hi) << 32) | lo;
     return true;
 }
 
@@ -79,13 +94,10 @@ bool readBlob(const std::string& in, size_t& off, std::string& out, std::string&
 std::string serialize(const InferenceRequest& req) {
     std::string out;
     out.append(kInferenceWireMagic, sizeof(kInferenceWireMagic));
-    appendU32(out, 1u);  // version
+    appendU32(out, kProtocolVersion);
 
-    appendU32(out, static_cast<uint32_t>(req.shm_inputs.size()));
-    for (const auto& name : req.shm_inputs) {
-        appendBlob(out, name);
-    }
-    appendBlob(out, req.shm_output);
+    appendU64(out, req.request_id);
+    appendU32(out, req.num_inputs);
     appendBlob(out, req.header.model_path);
 
     appendI32(out, req.header.width);
@@ -120,26 +132,16 @@ bool deserialize(const std::string& payload, InferenceRequest& out, std::string&
     if (!readU32(payload, off, version, error)) {
         return false;
     }
-    if (version != 1u) {
-        error = "unsupported version";
+    if (version != kProtocolVersion) {
+        error = "unsupported version " + std::to_string(version) + " (this build speaks " +
+                std::to_string(kProtocolVersion) + ")";
         return false;
     }
 
-    uint32_t num_inputs = 0;
-    if (!readU32(payload, off, num_inputs, error)) {
+    if (!readU64(payload, off, out.request_id, error)) {
         return false;
     }
-    out.shm_inputs.clear();
-    out.shm_inputs.reserve(num_inputs);
-    for (uint32_t i = 0; i < num_inputs; ++i) {
-        std::string name;
-        if (!readBlob(payload, off, name, error)) {
-            return false;
-        }
-        out.shm_inputs.push_back(std::move(name));
-    }
-
-    if (!readBlob(payload, off, out.shm_output, error)) {
+    if (!readU32(payload, off, out.num_inputs, error)) {
         return false;
     }
     if (!readBlob(payload, off, out.header.model_path, error)) {

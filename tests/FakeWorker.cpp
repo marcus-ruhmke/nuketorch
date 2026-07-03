@@ -1,14 +1,49 @@
+#include <nuketorch/Errors.h>
 #include <nuketorch/WorkerHarness.h>
 
+#include <unistd.h>
+
+#include <chrono>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
+// Deterministic torch-free worker for integration tests.
+//
+// Recognized params:
+//   timestep   float added to the blended output (default 0.25)
+//   crash_now  if present, prints a marker to stderr and _exit(3)s mid-frame
+//   sleep_ms   sleeps this long in 10 ms chunks, polling ctx.cancelled() and
+//              throwing CancelledError when the host raises the cancel flag
 int main(int argc, char** argv) {
+    // Marker used by tests asserting that worker stderr reaches host error messages.
+    std::fprintf(stderr, "FakeWorker started\n");
+
     return nuketorch::workerMain(
         argc,
         argv,
         [](const nuketorch::WorkerContext& ctx) {
             const auto& req = ctx.request;
+
+            if (req.params.count("crash_now")) {
+                std::fprintf(stderr, "FakeWorker crashing on request\n");
+                _exit(3);
+            }
+
+            const auto sleep_it = req.params.find("sleep_ms");
+            if (sleep_it != req.params.end()) {
+                int remaining = std::stoi(sleep_it->second);
+                while (remaining > 0) {
+                    if (ctx.cancelled && ctx.cancelled()) {
+                        throw nuketorch::CancelledError("fake worker cancelled");
+                    }
+                    const int chunk = remaining < 10 ? remaining : 10;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(chunk));
+                    remaining -= chunk;
+                }
+            }
+
             const int w = req.header.width;
             const int h = req.header.height;
             const int c = req.header.channels;
