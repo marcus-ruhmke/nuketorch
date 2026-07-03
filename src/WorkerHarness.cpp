@@ -1,5 +1,6 @@
 #include <nuketorch/WorkerHarness.h>
 
+#include <nuketorch/FreezeDebug.h>
 #include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/IPC.h>
 #include <nuketorch/Protocol.h>
@@ -13,6 +14,9 @@
 namespace nuketorch {
 
 int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallback gpu_info) {
+    FREEZE_LOG("WORKER", "workerMain() entry argc=%d argv[0]=%s argv[1]=%s",
+               argc, argc > 0 ? argv[0] : "?", argc > 1 ? argv[1] : "?");
+
     if (argc < 2) {
         std::cerr << "Usage: worker <socket_path>\n";
         return 2;
@@ -26,8 +30,11 @@ int workerMain(int argc, char** argv, InferenceCallback inference, GpuInfoCallba
     const std::string socket_path = argv[1];
 
     try {
+        FREEZE_LOG("WORKER", "workerMain(): connecting IPCClient to %s", socket_path.c_str());
         IPCClient client(socket_path);
+        FREEZE_LOG("WORKER", "workerMain(): IPCClient connected, ABOUT TO send READY");
         client.send("READY");
+        FREEZE_LOG("WORKER", "workerMain(): READY sent, entering message loop");
 
         while (true) {
             const std::string msg = client.receive(-1);

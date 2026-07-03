@@ -1,5 +1,6 @@
 #include <nuketorch/InferenceClient.h>
 
+#include <nuketorch/FreezeDebug.h>
 #include <nuketorch/ImageUtils.h>
 #include <nuketorch/InferenceMetrics.h>
 #include <nuketorch/IPC.h>
@@ -7,6 +8,7 @@
 #include <nuketorch/ScopedTimer.h>
 #include <nuketorch/SharedMemoryBuffer.h>
 
+#include <errno.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -38,28 +40,101 @@ InferenceClient::~InferenceClient() {
 }
 
 void InferenceClient::start() {
+    FREEZE_LOG("PLUGIN", "InferenceClient::start() entry, worker_binary=%s socket=%s",
+               worker_binary_.c_str(), socket_path_.c_str());
     if (worker_pid_ > 0) {
+        FREEZE_LOG("PLUGIN", "InferenceClient::start(): worker_pid_=%d already set, returning",
+                   static_cast<int>(worker_pid_));
         return;
     }
 
+    FREEZE_LOG("PLUGIN", "InferenceClient::start(): creating IPCServer");
     server_ = std::make_unique<IPCServer>(socket_path_);
+    FREEZE_LOG("PLUGIN", "InferenceClient::start(): IPCServer ready, ABOUT TO fork()");
     const pid_t pid = fork();
     if (pid < 0) {
+        const int err = errno;
+        FREEZE_LOG("PLUGIN", "InferenceClient::start(): fork() FAILED errno=%d (%s)",
+                   err, std::strerror(err));
         server_.reset();
         throw std::runtime_error("fork failed");
     }
 
     if (pid == 0) {
+        FREEZE_LOG("CHILD", "post-fork in child, ABOUT TO execl(%s)",
+                   worker_binary_.c_str());
         execl(worker_binary_.c_str(), worker_binary_.c_str(), socket_path_.c_str(), nullptr);
+        const int err = errno;
+        FREEZE_LOG("CHILD", "execl() FAILED errno=%d (%s)", err, std::strerror(err));
         _exit(127);
     }
 
     worker_pid_ = pid;
-    const std::string ready = server_->receive(-1);
+
+    // Wait for READY with a finite timeout AND poll for early child death, so
+    // we can never wedge the caller's (typically GUI) thread if the worker
+    // exits during dynamic linking / static init (e.g. missing shared lib).
+    constexpr int kReadyTimeoutMs = 30000;     // total budget for worker bring-up
+    constexpr int kPollIntervalMs = 200;       // how often we waitpid()
+    int waited_ms = 0;
+    FREEZE_LOG("PLUGIN", "InferenceClient::start(): post-fork parent, child pid=%d, "
+               "polling for READY (timeout %d ms)",
+               static_cast<int>(pid), kReadyTimeoutMs);
+
+    std::string ready;
+    while (true) {
+        // 1. Has the child already died? execve() failure or missing shared
+        //    library show up here before any IPC ever happens.
+        int status = 0;
+        const pid_t r = ::waitpid(worker_pid_, &status, WNOHANG);
+        if (r == worker_pid_) {
+            const int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            const int term_sig = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+            FREEZE_LOG("PLUGIN",
+                       "InferenceClient::start(): worker died early "
+                       "exit_code=%d term_sig=%d (likely missing shared lib; "
+                       "run worker standalone to see ld-linux error)",
+                       exit_code, term_sig);
+            worker_pid_ = -1;
+            server_.reset();
+            throw std::runtime_error(
+                "worker process exited before sending READY (exit code " +
+                std::to_string(exit_code) +
+                "; run the worker binary directly to see the error)");
+        }
+
+        // 2. Is the READY message available?
+        if (server_->hasData(kPollIntervalMs)) {
+            ready = server_->receive(1000);
+            FREEZE_LOG("PLUGIN",
+                       "InferenceClient::start(): receive() returned '%s'",
+                       ready.c_str());
+            break;
+        }
+
+        waited_ms += kPollIntervalMs;
+        if (waited_ms >= kReadyTimeoutMs) {
+            FREEZE_LOG("PLUGIN",
+                       "InferenceClient::start(): timed out after %d ms waiting for READY",
+                       waited_ms);
+            // Best-effort: kill the child and clean up.
+            ::kill(worker_pid_, SIGKILL);
+            int dummy = 0;
+            (void)::waitpid(worker_pid_, &dummy, 0);
+            worker_pid_ = -1;
+            server_.reset();
+            throw std::runtime_error(
+                "worker did not report READY within " +
+                std::to_string(kReadyTimeoutMs) + " ms");
+        }
+    }
+
     if (ready != "READY") {
+        FREEZE_LOG("PLUGIN", "InferenceClient::start(): handshake mismatch, calling stop()");
         stop();
         throw std::runtime_error("worker did not report READY");
     }
+    FREEZE_LOG("PLUGIN", "InferenceClient::start(): handshake OK, returning");
 }
 
 void InferenceClient::stop() {
