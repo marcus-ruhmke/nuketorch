@@ -1,18 +1,23 @@
 // FreezeDebug.h
 //
-// Crash/freeze-survival logger. Every call opens the log file with O_APPEND |
-// O_SYNC, writes a single line, fsync()s, and closes. That guarantees the OS
-// has committed the byte to disk before we return -- so even if the kernel,
-// X server or NVIDIA driver wedges immediately after, the last line in the
-// log is the last instruction that actually executed.
+// Crash/freeze-survival logger, disabled by default. When enabled, every call
+// opens the log file with O_APPEND | O_SYNC, writes a single line, fsync()s,
+// and closes. That guarantees the OS has committed the byte to disk before we
+// return -- so even if the kernel, X server or NVIDIA driver wedges
+// immediately after, the last line in the log is the last instruction that
+// actually executed.
 //
-// Default log path: /tmp/nnretime_freeze.log
-// Override via env var:  NUKETORCH_FREEZE_LOG=/some/other/path
+// Enable by setting the env var to the log path (there is no default path):
+//   NUKETORCH_FREEZE_LOG=/run/user/1000/nuketorch_freeze.log
+// Prefer a private directory ($XDG_RUNTIME_DIR); the file is opened with
+// O_NOFOLLOW, so a symlink planted at the path disables logging rather than
+// redirecting it. When the env var is unset, FREEZE_LOG compiles to a call
+// that returns immediately without formatting anything.
 //
 // Usage:
 //   #include <nuketorch/FreezeDebug.h>
-//   FREEZE_LOG("PLUGIN", "about to fork()");
-//   FREEZE_LOG("PLUGIN", "fork returned pid=%d", pid);
+//   FREEZE_LOG("PLUGIN", "about to spawn worker");
+//   FREEZE_LOG("PLUGIN", "spawn returned pid=%d", pid);
 
 #pragma once
 
@@ -29,17 +34,22 @@
 
 namespace nuketorch::debug {
 
+/// Path from NUKETORCH_FREEZE_LOG, or nullptr when logging is disabled.
 inline const char* freezeLogPath() {
-    static const char* path = []() {
+    static const char* path = []() -> const char* {
         const char* p = std::getenv("NUKETORCH_FREEZE_LOG");
-        return (p && *p) ? p : "/tmp/nnretime_freeze.log";
+        return (p && *p) ? p : nullptr;
     }();
     return path;
 }
 
 inline void freezeLog(const char* side, const char* fmt, ...) {
-    const int fd = ::open(freezeLogPath(),
-                          O_WRONLY | O_CREAT | O_APPEND | O_SYNC, 0644);
+    const char* path = freezeLogPath();
+    if (!path) {
+        return;
+    }
+    const int fd = ::open(path, O_WRONLY | O_CREAT | O_APPEND | O_SYNC | O_NOFOLLOW | O_CLOEXEC,
+                          0600);
     if (fd < 0) {
         return;
     }
