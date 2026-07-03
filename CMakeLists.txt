@@ -82,6 +82,7 @@ if(NUKETORCH_BUILD_TORCH_WORKER)
     src/torch_worker/BackendParams.cpp
     src/torch_worker/CudaEventTimer.cpp
     src/torch_worker/CudaPinnedMemory.cpp
+    src/torch_worker/CustomLogTransfer.cpp
     src/torch_worker/TorchWorkerUtils.cpp
     src/torch_worker/TorchScriptBackend.cpp
     src/torch_worker/AOTInductorBackend.cpp
