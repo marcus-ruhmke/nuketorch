@@ -2,7 +2,10 @@
 
 #include <nuketorch/InferenceMetrics.h>
 
+#include <arpa/inet.h>
+
 #include <cmath>
+#include <locale>
 #include <string>
 
 namespace {
@@ -130,4 +133,66 @@ TEST(InferenceMetricsTest, ParseInferenceOkResponseRejectsNonOk) {
     std::string error;
     EXPECT_FALSE(nuketorch::parseInferenceOkResponse("FAIL", parsed, error));
     EXPECT_FALSE(error.empty());
+}
+
+namespace {
+
+void appendU32(std::string& out, uint32_t v) {
+    const uint32_t net = htonl(v);
+    out.append(reinterpret_cast<const char*>(&net), sizeof(net));
+}
+
+void appendBlob(std::string& out, const std::string& s) {
+    appendU32(out, static_cast<uint32_t>(s.size()));
+    out.append(s);
+}
+
+}  // namespace
+
+TEST(InferenceMetricsTest, UnknownKeysAreSkippedForForwardCompat) {
+    // Hand-build a v1 blob with one known and one unknown entry, as a newer
+    // worker with an extra metric would produce.
+    std::string blob("NTM1", 4);
+    appendU32(blob, 1u);  // version
+    appendU32(blob, 2u);  // entry count
+    appendBlob(blob, "backend_forward_ms");
+    appendBlob(blob, "12.5");
+    appendBlob(blob, "some_future_metric");
+    appendBlob(blob, "whatever");
+
+    nuketorch::InferenceMetrics parsed;
+    std::string error;
+    ASSERT_TRUE(nuketorch::parseMetricsPayload(blob, parsed, error)) << error;
+    EXPECT_DOUBLE_EQ(parsed.backend_forward_ms, 12.5);
+}
+
+namespace {
+
+/// numpunct that formats doubles as "12,5" — the failure mode of stream-based
+/// serialization under a comma-decimal global locale.
+class CommaDecimal : public std::numpunct<char> {
+protected:
+    char do_decimal_point() const override { return ','; }
+};
+
+}  // namespace
+
+TEST(InferenceMetricsTest, WireFormatIsLocaleIndependent) {
+    const std::locale saved = std::locale::global(
+        std::locale(std::locale::classic(), new CommaDecimal));
+
+    nuketorch::InferenceMetrics m;
+    m.backend_forward_ms = 12.5;
+    m.gpu_compute_ms = 0.0625;
+
+    const std::string blob = nuketorch::serializeMetrics(m);
+    nuketorch::InferenceMetrics parsed;
+    std::string error;
+    const bool ok = nuketorch::parseMetricsPayload(blob, parsed, error);
+
+    std::locale::global(saved);
+
+    ASSERT_TRUE(ok) << error;
+    EXPECT_DOUBLE_EQ(parsed.backend_forward_ms, 12.5);
+    EXPECT_DOUBLE_EQ(parsed.gpu_compute_ms, 0.0625);
 }

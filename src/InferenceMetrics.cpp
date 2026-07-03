@@ -2,8 +2,8 @@
 
 #include <arpa/inet.h>
 
+#include <charconv>
 #include <cstring>
-#include <sstream>
 #include <stdexcept>
 
 namespace nuketorch {
@@ -50,23 +50,33 @@ bool readBlob(const std::string& in, size_t& off, std::string& out, std::string&
     return true;
 }
 
+// std::to_chars/from_chars are locale-independent by definition. Stream-based
+// formatting is not: a host process that installs a comma-decimal global
+// locale would silently break the wire format.
+
 std::string doubleToWire(double v) {
-    std::ostringstream oss;
-    oss.precision(17);
-    oss << v;
-    return oss.str();
+    char buf[64];
+    const auto res = std::to_chars(buf, buf + sizeof(buf), v);
+    if (res.ec != std::errc()) {
+        throw std::runtime_error("failed to format double for metrics wire format");
+    }
+    return std::string(buf, res.ptr);
 }
 
 bool wireToDouble(const std::string& s, double& out) {
-    std::istringstream iss(s);
-    iss >> out;
-    return !iss.fail() && iss.eof();
+    const auto res = std::from_chars(s.data(), s.data() + s.size(), out);
+    return res.ec == std::errc() && res.ptr == s.data() + s.size();
 }
 
 bool wireToInt64(const std::string& s, int64_t& out) {
-    std::istringstream iss(s);
-    iss >> out;
-    return !iss.fail() && iss.eof();
+    const auto res = std::from_chars(s.data(), s.data() + s.size(), out);
+    return res.ec == std::errc() && res.ptr == s.data() + s.size();
+}
+
+std::string int64ToWire(int64_t v) {
+    char buf[24];
+    const auto res = std::to_chars(buf, buf + sizeof(buf), v);
+    return std::string(buf, res.ptr);
 }
 
 }  // namespace
@@ -76,9 +86,7 @@ std::string serializeMetrics(const InferenceMetrics& m) {
     out.append(kMetricsWireMagic, sizeof(kMetricsWireMagic));
     appendU32(out, 1u);  // version
 
-    std::ostringstream peak_oss;
-    peak_oss << m.peak_gpu_memory_bytes;
-    const std::string peak_str = peak_oss.str();
+    const std::string peak_str = int64ToWire(m.peak_gpu_memory_bytes);
 
     struct Entry {
         const char* key;
@@ -176,10 +184,9 @@ bool parseMetricsPayload(const std::string& payload, InferenceMetrics& out, std:
                 error = "bad peak_gpu_memory_bytes";
                 return false;
             }
-        } else {
-            error = "unknown metrics key: " + k;
-            return false;
         }
+        // Unknown keys are skipped: a newer worker adding a metric must not
+        // break an older host.
     }
 
     if (off != payload.size()) {
