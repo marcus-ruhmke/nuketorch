@@ -22,7 +22,11 @@ public:
 inline constexpr uint32_t kMaxMessageBytes = 16u * 1024u * 1024u;
 
 /// Maximum number of SCM_RIGHTS file descriptors accepted per message.
-inline constexpr size_t kMaxFdsPerMessage = 32;
+/// The kernel bound is SCM_MAX_FD (253); 64 leaves ample margin while
+/// allowing plugins that ship a window of frames per request (e.g. temporal
+/// models needing ~50 input planes). Client and worker must agree — rebuild
+/// worker binaries when changing this.
+inline constexpr size_t kMaxFdsPerMessage = 64;
 
 /// Unix domain stream socket server: bind/listen on @p path, accept one client,
 /// exchange length-prefixed messages with optional SCM_RIGHTS fd payloads.

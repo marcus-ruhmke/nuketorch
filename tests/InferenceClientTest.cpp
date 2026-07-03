@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <nuketorch/Errors.h>
+#include <nuketorch/IPC.h>
 #include <nuketorch/InferenceClient.h>
 #include <nuketorch/InferenceMetrics.h>
 
@@ -288,8 +289,14 @@ TEST(InferenceClientTest, RepeatedAndGrowingFramesReuseWorker) {
 TEST(InferenceClientTest, ConstructorRejectsTooManyInputs) {
     // [inputs..., output, cancel] must fit the per-message SCM_RIGHTS cap; fail
     // at construction, not on the first frame.
-    EXPECT_THROW(nuketorch::InferenceClient(FAKE_WORKER_BIN, uniqueSocketPath("many"), 31),
-                 nuketorch::Error);
+    const int too_many =
+        static_cast<int>(nuketorch::kMaxFdsPerMessage) - 2 + 1;
+    EXPECT_THROW(
+        nuketorch::InferenceClient(FAKE_WORKER_BIN, uniqueSocketPath("many"), too_many),
+        nuketorch::Error);
+    // The largest allowed count constructs fine.
+    EXPECT_NO_THROW(nuketorch::InferenceClient(FAKE_WORKER_BIN, uniqueSocketPath("max"),
+                                               too_many - 1));
 }
 
 TEST(InferenceClientTest, StopWithoutStartIsHarmless) {
