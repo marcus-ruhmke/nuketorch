@@ -57,6 +57,33 @@ void setErrorFromException(NuketorchClientOpaque* w, const std::exception& e) {
     setError(w, e.what(), code);
 }
 
+nuketorch::InferenceConfig toCppConfig(const nuketorch_inference_config& config) {
+    nuketorch::InferenceConfig cfg;
+    if (config.model_path) {
+        cfg.model_path = config.model_path;
+    }
+    cfg.use_gpu = config.use_gpu != 0;
+    cfg.mixed_precision = config.mixed_precision != 0;
+    cfg.debug = config.debug != 0;
+    cfg.frame_timeout_ms = config.frame_timeout_ms;
+    if (config.params && config.num_params > 0) {
+        for (int i = 0; i < config.num_params; ++i) {
+            const nuketorch_param& p = config.params[i];
+            if (p.key && p.value) {
+                cfg.params[p.key] = p.value;
+            }
+        }
+    }
+    return cfg;
+}
+
+std::function<bool()> toCppAbort(nuketorch_abort_fn abort_fn, void* abort_user_data) {
+    if (!abort_fn) {
+        return {};
+    }
+    return [abort_fn, abort_user_data]() { return abort_fn(abort_user_data) != 0; };
+}
+
 }  // namespace
 
 extern "C" {
@@ -209,35 +236,79 @@ int nuketorch_client_process_frame(nuketorch_client_t client,
     fb.height = buffers->height;
     fb.channels = buffers->channels;
 
-    nuketorch::InferenceConfig cfg;
-    if (config->model_path) {
-        cfg.model_path = config->model_path;
-    }
-    cfg.use_gpu = config->use_gpu != 0;
-    cfg.mixed_precision = config->mixed_precision != 0;
-    cfg.debug = config->debug != 0;
-    cfg.frame_timeout_ms = config->frame_timeout_ms;
-    if (config->params && config->num_params > 0) {
-        for (int i = 0; i < config->num_params; ++i) {
-            const nuketorch_param& p = config->params[i];
-            if (p.key && p.value) {
-                cfg.params[p.key] = p.value;
-            }
-        }
-    }
-
-    std::function<bool()> is_aborted;
-    if (abort_fn) {
-        is_aborted = [abort_fn, abort_user_data]() {
-            return abort_fn(abort_user_data) != 0;
-        };
-    }
+    nuketorch::InferenceConfig cfg = toCppConfig(*config);
+    std::function<bool()> is_aborted = toCppAbort(abort_fn, abort_user_data);
 
     nuketorch::InferenceMetrics cpp_metrics;
     nuketorch::InferenceMetrics* metrics_ptr = metrics ? &cpp_metrics : nullptr;
 
     try {
         w->client->processFrame(fb, cfg, is_aborted, metrics_ptr);
+        if (metrics) {
+            copyMetricsToC(cpp_metrics, metrics);
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        setErrorFromException(w, e);
+        return -1;
+    }
+}
+
+int nuketorch_client_map_frame(nuketorch_client_t client, int width, int height,
+                               int channels, float** inputs_out,
+                               int inputs_capacity, float** output_out) {
+    if (!client) {
+        return -1;
+    }
+    auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
+    w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
+    if (!inputs_out || !output_out) {
+        setError(w, "null argument", NUKETORCH_ERRC_INVALID_ARGUMENT);
+        return -1;
+    }
+    try {
+        nuketorch::MappedFrame frame = w->client->mapFrame(width, height, channels);
+        if (static_cast<size_t>(inputs_capacity) < frame.inputs.size()) {
+            setError(w, "inputs_capacity smaller than the client's num_inputs",
+                     NUKETORCH_ERRC_INVALID_ARGUMENT);
+            return -1;
+        }
+        for (size_t i = 0; i < frame.inputs.size(); ++i) {
+            inputs_out[i] = frame.inputs[i];
+        }
+        *output_out = frame.output;
+        return 0;
+    } catch (const std::exception& e) {
+        setErrorFromException(w, e);
+        return -1;
+    }
+}
+
+int nuketorch_client_process_mapped_frame(nuketorch_client_t client,
+                                          const nuketorch_inference_config* config,
+                                          nuketorch_abort_fn abort_fn,
+                                          void* abort_user_data,
+                                          nuketorch_inference_metrics* metrics) {
+    if (!client || !config) {
+        if (client) {
+            setError(reinterpret_cast<NuketorchClientOpaque*>(client), "null argument",
+                     NUKETORCH_ERRC_INVALID_ARGUMENT);
+        }
+        return -1;
+    }
+    auto* w = reinterpret_cast<NuketorchClientOpaque*>(client);
+    w->last_error.clear();
+    w->last_error_code = NUKETORCH_ERRC_OK;
+
+    nuketorch::InferenceConfig cfg = toCppConfig(*config);
+    std::function<bool()> is_aborted = toCppAbort(abort_fn, abort_user_data);
+
+    nuketorch::InferenceMetrics cpp_metrics;
+    nuketorch::InferenceMetrics* metrics_ptr = metrics ? &cpp_metrics : nullptr;
+
+    try {
+        w->client->processMappedFrame(cfg, is_aborted, metrics_ptr);
         if (metrics) {
             copyMetricsToC(cpp_metrics, metrics);
         }

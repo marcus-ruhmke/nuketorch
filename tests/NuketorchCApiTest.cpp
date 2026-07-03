@@ -232,3 +232,48 @@ TEST(NuketorchCApiTest, MetricsStringFields) {
 
     nuketorch_client_destroy(c);
 }
+
+TEST(NuketorchCApiTest, MappedFrameRoundTrip) {
+    const std::string socket_path =
+        "/tmp/nuketorch_capi_mapped_" + std::to_string(getpid()) + ".sock";
+    nuketorch_client_t c = nuketorch_client_create(FAKE_WORKER_BIN, socket_path.c_str(), 2);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(nuketorch_client_start(c), 0);
+
+    float* inputs[2] = {nullptr, nullptr};
+    float* output = nullptr;
+    ASSERT_EQ(nuketorch_client_map_frame(c, 2, 1, 3, inputs, 2, &output), 0)
+        << nuketorch_client_last_error(c);
+    ASSERT_NE(inputs[0], nullptr);
+    ASSERT_NE(inputs[1], nullptr);
+    ASSERT_NE(output, nullptr);
+
+    for (int i = 0; i < 6; ++i) {
+        inputs[0][i] = static_cast<float>(i + 1);
+        inputs[1][i] = static_cast<float>(i + 7);
+    }
+
+    nuketorch_param params[] = {{"timestep", "0.25"}};
+    nuketorch_inference_config cfg{};
+    cfg.model_path = "unused.pt";
+    cfg.use_gpu = 1;
+    cfg.mixed_precision = 1;
+    cfg.params = params;
+    cfg.num_params = 1;
+
+    nuketorch_inference_metrics metrics{};
+    ASSERT_EQ(nuketorch_client_process_mapped_frame(c, &cfg, nullptr, nullptr, &metrics), 0)
+        << nuketorch_client_last_error(c);
+    EXPECT_STREQ(metrics.backend, "fake");
+    for (int i = 0; i < 6; ++i) {
+        // FakeWorker: (in0 + in1) / 2 + timestep; no flip on the mapped path.
+        EXPECT_FLOAT_EQ(output[i], (inputs[0][i] + inputs[1][i]) * 0.5f + 0.25f);
+    }
+
+    // Too-small capacity is a typed error, not a crash.
+    float* one[1] = {nullptr};
+    EXPECT_EQ(nuketorch_client_map_frame(c, 2, 1, 3, one, 1, &output), -1);
+    EXPECT_EQ(nuketorch_client_last_error_code(c), NUKETORCH_ERRC_INVALID_ARGUMENT);
+
+    nuketorch_client_destroy(c);
+}

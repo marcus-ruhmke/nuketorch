@@ -98,6 +98,24 @@ int nuketorch_client_process_frame(nuketorch_client_t client,
                                    void* abort_user_data,
                                    struct nuketorch_inference_metrics* metrics);
 
+/** Zero-copy path (mirrors InferenceClient::mapFrame): map or grow the shared
+ *  frame buffers for the given dimensions and return direct pointers. Fills
+ *  inputs_out[0 .. num_inputs-1] (inputs_capacity must be >= the client's
+ *  num_inputs) and *output_out. Pointers stay valid until the next map with
+ *  larger dimensions, stop(), or abort(). No vertical flip is applied on this
+ *  path — scanline order is a contract between caller and worker. */
+int nuketorch_client_map_frame(nuketorch_client_t client, int width, int height,
+                               int channels, float** inputs_out,
+                               int inputs_capacity, float** output_out);
+
+/** Run one frame against the buffers most recently returned by
+ *  nuketorch_client_map_frame. */
+int nuketorch_client_process_mapped_frame(nuketorch_client_t client,
+                                          const struct nuketorch_inference_config* config,
+                                          nuketorch_abort_fn abort_fn,
+                                          void* abort_user_data,
+                                          struct nuketorch_inference_metrics* metrics);
+
 const char* nuketorch_client_last_error(nuketorch_client_t client);
 
 /** Category of the last failed call on this handle; NUKETORCH_ERRC_OK after a success. */
