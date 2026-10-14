@@ -104,10 +104,17 @@ std::string serializeMetrics(const InferenceMetrics& m) {
         {"peak_gpu_memory_bytes", peak_str},
     };
 
-    appendU32(out, static_cast<uint32_t>(sizeof(entries) / sizeof(entries[0])));
+    const size_t n_entries = sizeof(entries) / sizeof(entries[0]);
+    // Optional keys go after the fixed set; hosts skip keys they do not know.
+    const bool has_notes = !m.notes.empty();
+    appendU32(out, static_cast<uint32_t>(n_entries + (has_notes ? 1 : 0)));
     for (const auto& e : entries) {
         appendBlob(out, std::string(e.key));
         appendBlob(out, e.value);
+    }
+    if (has_notes) {
+        appendBlob(out, "notes");
+        appendBlob(out, m.notes);
     }
     return out;
 }
@@ -179,6 +186,8 @@ bool parseMetricsPayload(const std::string& payload, InferenceMetrics& out, std:
             m.device = std::move(v);
         } else if (k == "dtype") {
             m.dtype = std::move(v);
+        } else if (k == "notes") {
+            m.notes = std::move(v);
         } else if (k == "peak_gpu_memory_bytes") {
             if (!wireToInt64(v, m.peak_gpu_memory_bytes)) {
                 error = "bad peak_gpu_memory_bytes";

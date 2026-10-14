@@ -40,7 +40,9 @@ struct MappedFrame {
 struct InferenceConfig {
     std::string model_path;
     bool use_gpu = true;
-    /// Convert the model to half precision on GPU (full FP16 conversion, not autocast).
+    /// Default precision when `params["precision"]` is absent: true = full FP16 conversion
+    /// on GPU (not autocast), false = float32. Set false and send `precision` explicitly
+    /// for any other mode (see torch_worker/BackendParams.h).
     bool mixed_precision = true;
     bool debug = false;
     /// Watchdog for one frame in milliseconds. When > 0 and the worker has not

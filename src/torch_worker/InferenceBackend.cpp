@@ -12,6 +12,26 @@
 
 namespace nuketorch::torch_worker {
 
+torch::jit::IValue InferenceBackend::runMethod(const std::string& name,
+                                               std::vector<torch::jit::IValue> inputs) {
+    if (name != "forward") {
+        throw std::invalid_argument("backend runs only forward, not \"" + name +
+                                    "\" (named methods need the torchscript backend)");
+    }
+    std::vector<torch::Tensor> outputs = forward(inputs);
+    if (outputs.size() == 1) {
+        return outputs[0];
+    }
+    return c10::ivalue::Tuple::create(std::vector<torch::jit::IValue>(outputs.begin(), outputs.end()));
+}
+
+torch::jit::IValue InferenceBackend::runMethod(const std::string& name,
+                                               std::vector<torch::jit::IValue> inputs,
+                                               const PrecisionSpec& spec) {
+    (void)spec;  // precision is compiled into the artifact
+    return runMethod(name, std::move(inputs));
+}
+
 std::unique_ptr<InferenceBackend> createBackend(const std::string& canonical_backend_name) {
 #ifdef NUKETORCH_TORCH_WORKER_HAS_TENSORRT
     if (canonical_backend_name == kBackendTensorRT) {

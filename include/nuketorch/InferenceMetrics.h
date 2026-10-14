@@ -24,6 +24,11 @@ struct InferenceMetrics {
     double round_trip_ms = -1;
     double shm_read_ms = -1;
     double total_ms = -1;
+
+    /// Worker remarks for this frame (e.g. a precision fallback, a recomputed
+    /// non-finite result); empty when there is nothing to say. Sent on the
+    /// wire only when non-empty; not part of the C API metrics struct.
+    std::string notes;
 };
 
 /// Serializes worker-side fields only (binary blob, no `"OK"` prefix).

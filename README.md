@@ -104,13 +104,13 @@ target_link_libraries(my_plugin PRIVATE nuketorch::nuketorch)
 | [`include/nuketorch/nuketorch_c.h`](include/nuketorch/nuketorch_c.h) | C API (opaque handle, error codes) |
 | [`include/nuketorch/FreezeDebug.h`](include/nuketorch/FreezeDebug.h) | Opt-in fsync-per-line freeze logger (`NUKETORCH_FREEZE_LOG=<path>`) |
 
-Worker-side torch helpers (TorchScript / AOTInductor / optional TensorRT backends) live under `include/nuketorch/torch_worker/` and build with `-DNUKETORCH_BUILD_TORCH_WORKER=ON`. Precision is selectable per frame via `params["precision"]`: `half` (full FP16 conversion, the `mixed_precision` default), `autocast` (FP32 weights, per-op FP16 — real mixed precision, TorchScript on CUDA), or `float32`. The worker caches frame mappings across requests, so steady-state frames cost no mmap.
+Worker-side torch helpers (TorchScript / AOTInductor / optional TensorRT backends) live under `include/nuketorch/torch_worker/` and build with `-DNUKETORCH_BUILD_TORCH_WORKER=ON`. Precision is selectable per frame via `params`: `precision` = `half` (full FP16 conversion, the `mixed_precision` default), `autocast` (FP32 weights, per-op **FP16** autocast), `bf16` (FP32 weights, per-op bfloat16 autocast; CUDA compute capability >= 8.0), or `float32`; plus `tf32=on|off` (absent: libtorch's boot state, which runs cuDNN convolutions in TF32), `autocast_methods=a,b` (autocast only these TorchScript methods), `jit_optimize=0|1` (TorchScript executor optimisation, held from load on; a change reloads), `cudnn_benchmark=0|1`, and `precision_policy=error|fallback_fp32`. Named TorchScript methods run through `InferenceBackend::runMethod`. See [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md#precision-torch_worker-backends). The worker caches frame mappings across requests, so steady-state frames cost no mmap.
 
 See [`docs/writing-a-plugin.md`](docs/writing-a-plugin.md) for an end-to-end integration guide.
 
 ## Compatibility
 
-Protocol v2 (0.2.0) is a clean break from v1: the client and worker verify versions during the `READY` handshake and refuse mismatched pairs with a clear error. Rebuild worker binaries when upgrading. The metrics format tolerates unknown keys, so adding metrics does not break older hosts.
+0.3.0 adds precision params and named methods without a wire change (still protocol v2); absent params behave as in 0.2. Protocol v2 (0.2.0) is a clean break from v1: the client and worker verify versions during the `READY` handshake and refuse mismatched pairs with a clear error. Rebuild worker binaries when upgrading. The metrics format tolerates unknown keys, so adding metrics does not break older hosts.
 
 ## License
 

@@ -72,6 +72,9 @@ if(TARGET nuketorch_torch_worker)
 
   add_executable(BackendPrecisionTest BackendPrecisionTest.cpp)
   target_link_libraries(BackendPrecisionTest PRIVATE nuketorch::nuketorch_torch_worker gtest_main)
+
+  add_executable(TorchScriptPrecisionTest TorchScriptPrecisionTest.cpp)
+  target_link_libraries(TorchScriptPrecisionTest PRIVATE nuketorch::nuketorch_torch_worker gtest_main)
 endif()
 
 include(GoogleTest)
@@ -93,4 +96,7 @@ if(TARGET CustomLogTransferTest)
 endif()
 if(TARGET BackendPrecisionTest)
   gtest_discover_tests(BackendPrecisionTest)
+endif()
+if(TARGET TorchScriptPrecisionTest)
+  gtest_discover_tests(TorchScriptPrecisionTest)
 endif()

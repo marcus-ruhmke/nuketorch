@@ -20,7 +20,9 @@ struct FrameHeader {
     int channels = 0;
     /// Prefer CUDA/MPS when available in the worker.
     bool use_gpu = true;
-    /// Convert the model to half precision on GPU (full FP16, not autocast) when supported.
+    /// Default precision when `params["precision"]` is absent: true = convert the model to
+    /// FP16 on GPU (full conversion, not autocast), false = float32. torch_worker requests
+    /// that send `precision` (half, autocast, bf16, float32, ...) ignore it.
     bool mixed_precision = true;
     /// If true, workers may enable verbose logging.
     bool debug = false;

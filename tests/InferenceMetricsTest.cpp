@@ -24,6 +24,7 @@ void expectMetricsNear(const nuketorch::InferenceMetrics& a, const nuketorch::In
     EXPECT_DOUBLE_EQ(a.round_trip_ms, b.round_trip_ms);
     EXPECT_DOUBLE_EQ(a.shm_read_ms, b.shm_read_ms);
     EXPECT_DOUBLE_EQ(a.total_ms, b.total_ms);
+    EXPECT_EQ(a.notes, b.notes);
 }
 
 }  // namespace
@@ -195,4 +196,22 @@ TEST(InferenceMetricsTest, WireFormatIsLocaleIndependent) {
     ASSERT_TRUE(ok) << error;
     EXPECT_DOUBLE_EQ(parsed.backend_forward_ms, 12.5);
     EXPECT_DOUBLE_EQ(parsed.gpu_compute_ms, 0.0625);
+}
+
+TEST(InferenceMetricsTest, NotesRoundTripAndStayOffTheWireWhenEmpty) {
+    nuketorch::InferenceMetrics m;
+    m.dtype = "float32/ieee(fallback:bf16),jit0";
+    const std::string plain = nuketorch::serializeMetrics(m);
+    EXPECT_EQ(plain.find("notes"), std::string::npos);
+
+    m.notes = "precision fallback: bf16 -> float32/ieee";
+    const std::string blob = nuketorch::serializeMetrics(m);
+    nuketorch::InferenceMetrics parsed;
+    std::string error;
+    ASSERT_TRUE(nuketorch::parseMetricsPayload(blob, parsed, error)) << error;
+    EXPECT_EQ(parsed.notes, m.notes);
+    EXPECT_EQ(parsed.dtype, m.dtype);
+
+    ASSERT_TRUE(nuketorch::parseMetricsPayload(plain, parsed, error)) << error;
+    EXPECT_TRUE(parsed.notes.empty());
 }

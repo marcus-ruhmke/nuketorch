@@ -146,11 +146,62 @@ would need a broker daemon and is deliberately out of scope.
 
 ### Precision (torch_worker backends)
 
-`cfg.mixed_precision = true` keeps its historical meaning: the whole module is
-converted to FP16. For real mixed precision set
-`cfg.params["precision"] = "autocast"` — weights stay FP32 and eligible ops run
-FP16 at forward time (TorchScript backend, CUDA only; AOTInductor/TensorRT
-artifacts have precision baked in). `"float32"` forces full precision.
+`cfg.mixed_precision = true` keeps its historical meaning: when no
+`precision` param is sent, the whole module is converted to FP16. Anything
+else is a `params` entry, parsed by `BackendCache::ensure` on every request
+(`torch_worker/BackendParams.h`):
+
+| Param | Values | Absent |
+|-------|--------|--------|
+| `precision` | `half`/`fp16` (FP16 weights), `autocast`/`amp` (FP32 weights, per-op **float16**), `bf16`/`bfloat16` (FP32 weights, per-op bfloat16), `float32`/`fp32`/`full`, `tf32` (= float32 + `tf32=on`), `ieee` (= float32 + `tf32=off`) | `half` if `mixed_precision`, else `float32` |
+| `tf32` | `on` / `off` (cuBLAS + cuDNN, process-wide) | libtorch boot state: cuDNN TF32 **on**, cuBLAS off |
+| `autocast_methods` | `features[,…]`: only these TorchScript methods autocast | every method |
+| `jit_optimize` | `0` / `1` | the calling thread's executor flag (libtorch default 1) |
+| `cudnn_benchmark` | `0` / `1` | untouched |
+| `precision_policy` | `error` / `fallback_fp32` | `error` |
+
+Rules worth knowing:
+
+- **`precision=float32` alone is not IEEE float32**: libtorch boots with cuDNN
+  TF32 on, so convolutions run TF32. Send `tf32=off` (or `precision=ieee`) for
+  true float32.
+- **Send the full precision state with every request** (TF32 and cuDNN
+  benchmark are process-wide; the worker applies them per request). A plugin
+  with its own precision modes should set `cfg.mixed_precision = false` and
+  always send `precision`.
+- **Executor rule (`jit_optimize`)**: TorchScript's profiling executor fixes a
+  method's plan on its first call(s). With `jit_optimize` set, the guard holds
+  around the load and every call into the module, so the first call already
+  runs under it; changing the value reloads the module. `jit_optimize=0` runs
+  the graph as exported: bit-identical results whatever the frame order.
+- bf16 and `tf32=on` need CUDA compute capability >= 8.0, and bf16, `tf32=on`
+  and `autocast_methods` need CUDA at all. Otherwise the request fails with
+  `ERR|bad_request` naming the mode, unless `precision_policy=fallback_fp32`:
+  then it runs IEEE float32, logs to stderr and says so in the metrics.
+  (Plain `autocast` keeps its old silent float32 fallback off CUDA.)
+- AOTInductor/TensorRT artifacts have precision baked in: new modes are
+  labelled `baked`, `autocast_methods` is refused.
+- The metrics `dtype` label names what ran: `float32`, `float16`,
+  `autocast(float16)` for the old values; `float32/ieee`, `float32/tf32`,
+  `autocast(bfloat16)`, `autocast(bfloat16;features)`, a `(fallback:bf16)`
+  suffix, and `,jit0` for `jit_optimize=0`. Fallbacks also appear in
+  `InferenceMetrics::notes` (C++ API only).
+
+Models with several entry points call them by name in the worker:
+
+```cpp
+cache.ensure(req.header, req.params, &ctx.metrics);
+auto& backend = cache.backend();
+// With autocast_methods=features only the first call autocasts.
+auto tokens = backend.runMethod("features", {frame, short_side, linear, false});
+auto depth = backend.runMethod("fuse", {tokens, mem3, mem4, h, w, short_side});
+// A non-finite result can be recomputed in IEEE float32 (same weights, no
+// autocast, TF32 off for the call).
+if (!nuketorch::torch_worker::allFinite(depth)) {
+  depth = backend.runMethod("forward", {frame, mem3, mem4, short_side, linear},
+                            nuketorch::torch_worker::PrecisionSpec::ieeeFloat32());
+}
+```
 
 **Canonical reference:** `../nnRetime/src/nnRetime.cpp` (`renderStripe`, worker restart/`ping`, mutex if you serialize GPU access across stripes).
 
